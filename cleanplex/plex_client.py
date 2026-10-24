@@ -119,6 +119,9 @@ class PlexClient:
         self.token = token
         self._server: PlexServer | None = None
         self._http = httpx.AsyncClient(timeout=10)
+        # Most recent /status/sessions failure, surfaced by the API so the UI
+        # can distinguish "Plex unreachable" from "nothing is playing".
+        self.last_session_error = ""
         # {rating_key: (monotonic_timestamp, (show_guid, show_title, show_thumb, show_rating_key, season_rating_key))}
         self._show_art_cache: dict[str, tuple[float, tuple[str, str, str, str, str]]] = {}
         # {client_identifier: {"transport": "proxy"|"direct", "port": int, "variant": int}}
@@ -143,6 +146,18 @@ class PlexClient:
         except Exception as exc:
             return False, str(exc)
 
+    async def get_server_info(self) -> dict:
+        """Return friendly name, version and machine id for diagnostics."""
+        try:
+            srv = await asyncio.to_thread(self._get_server)
+            return {
+                "friendly_name": srv.friendlyName,
+                "version": getattr(srv, "version", ""),
+                "machine_identifier": srv.machineIdentifier,
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
     async def get_machine_identifier(self) -> str:
         """Return the Plex server machine identifier, used to build web deep links."""
         try:
@@ -159,9 +174,11 @@ class PlexClient:
             srv = await asyncio.to_thread(self._get_server)
             sessions = await asyncio.to_thread(srv.sessions)
         except Exception as exc:
+            self.last_session_error = str(exc)
             logger.warning("Failed to fetch sessions: %s", exc)
             return []
 
+        self.last_session_error = ""
         result = []
         for s in sessions:
             try:

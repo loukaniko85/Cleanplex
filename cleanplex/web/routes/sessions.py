@@ -36,7 +36,7 @@ async def get_sessions():
             "filtering_enabled": filtering_enabled,
             "thumb_url": client.thumb_url(s.thumb) if s.thumb else "",
         })
-    return {"sessions": result}
+    return {"sessions": result, "error": client.last_session_error or None}
 
 
 @router.get("/events")

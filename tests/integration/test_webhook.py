@@ -72,3 +72,17 @@ async def test_non_library_event_is_ignored(http_client):
 
     assert response.status_code == 200
     assert response.json()["ignored"] == "event"
+
+
+async def test_webhook_status_records_every_delivery(http_client):
+    await http_client.post(
+        "/api/webhooks/plex",
+        data={"payload": json.dumps(_payload(event="media.play"))},
+    )
+    await http_client.post("/api/webhooks/plex", data={})
+
+    status = (await http_client.get("/api/webhooks/plex/status")).json()
+
+    assert status["total"] == 2
+    assert status["last_received_at"]
+    assert {row["result"] for row in status["events"]} == {"ignored", "invalid"}

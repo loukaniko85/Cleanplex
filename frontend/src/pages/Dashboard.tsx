@@ -58,6 +58,7 @@ function msToTime(ms: number): string {
 
 export default function Dashboard() {
   const [sessions, setSessions] = useState<Session[]>([])
+  const [sessionsError, setSessionsError] = useState('')
   const [events, setEvents] = useState<SkipEvent[]>([])
   const [scanner, setScanner] = useState<ScannerStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -70,11 +71,12 @@ export default function Dashboard() {
   const refresh = async () => {
     try {
       const [s, e, sc] = await Promise.all([
-        api.get<{ sessions: Session[] }>('/api/sessions'),
+        api.get<{ sessions: Session[]; error?: string | null }>('/api/sessions'),
         api.get<{ events: SkipEvent[] }>('/api/sessions/events'),
         api.get<ScannerStatus>('/api/sessions/scanner-status'),
       ])
       setSessions(s.sessions)
+      setSessionsError(s.error ?? '')
       setEvents(e.events)
       setScanner(sc)
     } catch {
@@ -94,11 +96,12 @@ export default function Dashboard() {
       controller = new AbortController()
       try {
         const [s, e, sc] = await Promise.all([
-          api.get<{ sessions: Session[] }>('/api/sessions', { signal: controller.signal }),
+          api.get<{ sessions: Session[]; error?: string | null }>('/api/sessions', { signal: controller.signal }),
           api.get<{ events: SkipEvent[] }>('/api/sessions/events', { signal: controller.signal }),
           api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal }),
         ])
         setSessions(s.sessions)
+        setSessionsError(s.error ?? '')
         setEvents(e.events)
         setScanner(sc)
       } catch {
@@ -314,7 +317,24 @@ export default function Dashboard() {
           <div className="text-gray-500 text-sm">Loading...</div>
         ) : sessions.length === 0 ? (
           <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500">
-            No active streams
+            {sessionsError ? (
+              <div className="space-y-1">
+                <p className="text-red-400">Plex session lookup failed</p>
+                <p className="text-xs text-gray-500">{sessionsError}</p>
+                <p className="text-xs text-gray-600">
+                  Check that the Plex token belongs to the server owner and that the
+                  server&apos;s <code>/status/sessions</code> endpoint is reachable.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <p>No active streams</p>
+                <p className="text-xs text-gray-600">
+                  Plex reported no sessions. Remote/streaming-service playback is not
+                  visible here — only sessions on this Plex server.
+                </p>
+              </div>
+            )}
           </div>
         ) : (
           <div className="grid gap-4">

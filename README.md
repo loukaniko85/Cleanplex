@@ -279,6 +279,24 @@ Only `library.new` triggers work, and only while auto-fetch is enabled. If you s
 `CLEANPLEX_WEBHOOK_TOKEN`, include it as `?token=...` in the URL. Plex sends the
 payload as multipart form data; no extra configuration is needed.
 
+**Verifying it:**
+
+- Settings → VideoSkip Exchange → **Plex webhook** shows the total deliveries, the
+  last event/time, and the result (`queued`, `ignored`, `invalid`, …).
+- `curl http://your-server:7979/api/webhooks/plex/status`
+- `docker logs -f cleanplex | grep -i webhook`
+- Manual delivery:
+
+  ```bash
+  curl -X POST http://localhost:7979/api/webhooks/plex \
+    -F 'payload={"event":"library.new","Metadata":{"ratingKey":"12345","title":"Test"}}'
+  ```
+
+  A `200` with `{"ignored": "auto-fetch off"}` means the endpoint is reachable but
+  auto-fetch is disabled. `library.new` fires when media is **added**, not when you
+  press play. If Plex runs in a container, `localhost` in Plex's webhook URL refers
+  to that container — use the host IP or a shared Docker network.
+
 Imported timings are authored against a specific cut of a film. Cleanplex checks them against the
 title's runtime and warns when they do not line up, since an extended edition will throw every
 timestamp out.
@@ -413,6 +431,18 @@ Titles can be marked as **ignored** to skip them during background scans:
 
 **Some rated titles still appear in the library?**
 - Check Settings → Content Ratings. The filter uses exact matching (e.g., "PG" ≠ "PG-13"). "Unrated" is an explicit checkbox option, not the same as empty rating.
+
+**Active Streams is empty while something is playing?**
+- Open `http://your-server:7979/api/sessions`. An `error` field means Cleanplex could
+  not read Plex's `/status/sessions`; otherwise Plex itself reported zero sessions.
+- Check `http://your-server:7979/api/settings/plex-diagnostics` for the server name,
+  session snapshot and last error.
+- Confirm the configured URL points at the Plex server that is actually playing (not
+  plex.tv or another server), and that the token belongs to the **server owner**. A
+  shared/managed-user token can browse libraries without seeing all sessions.
+- Compare with Plex directly:
+  `curl -s "http://plex-ip:32400/status/sessions?X-Plex-Token=TOKEN" | head -c 500`
+- Plex's own streaming-service playback (free movies) is not a session on your server.
 
 **VideoSkip says "No Exchange match"?**
 - The Exchange is matched by IMDb ID when Plex provides one, then title + year (movies) or show + season/episode (TV). Re-sync the library after upgrading so season/episode and external IDs are stored. A `502` means the Exchange itself was unreachable; retry later or upload the `.skp` manually.

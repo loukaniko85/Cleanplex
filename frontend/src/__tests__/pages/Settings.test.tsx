@@ -64,6 +64,23 @@ const coverage = {
   ],
 }
 
+const webhookStatus = {
+  total: 1,
+  last_received_at: '2026-10-24 06:00:00',
+  auto_fetch: false,
+  token_required: false,
+  events: [
+    {
+      received_at: '2026-10-24 06:00:00',
+      event: 'library.new',
+      rating_key: '10',
+      title: 'Oppenheimer',
+      result: 'queued',
+      detail: '',
+    },
+  ],
+}
+
 const queueStatus = {
   auto_fetch: false,
   paused: false,
@@ -98,6 +115,7 @@ beforeEach(() => {
     if (path.includes('detector-labels')) return Promise.resolve({ labels: [] })
     if (path.includes('videoskip/coverage')) return Promise.resolve(coverage)
     if (path.includes('videoskip/queue')) return Promise.resolve(queueStatus)
+    if (path.includes('webhooks/plex/status')) return Promise.resolve(webhookStatus)
     // /api/settings returns the settings object flat, not wrapped.
     if (path.includes('settings')) return Promise.resolve(defaultSettings)
     if (path.includes('libraries')) return Promise.resolve({ libraries: [] })

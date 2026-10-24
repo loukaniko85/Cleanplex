@@ -170,6 +170,17 @@ CREATE TABLE IF NOT EXISTS videoskip_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_videoskip_queue_status ON videoskip_queue(status, created_at);
 
+CREATE TABLE IF NOT EXISTS webhook_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    event       TEXT    DEFAULT '',
+    rating_key  TEXT    DEFAULT '',
+    title       TEXT    DEFAULT '',
+    result      TEXT    DEFAULT '',
+    detail      TEXT    DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events(received_at DESC);
+
 CREATE TABLE IF NOT EXISTS plex_markers (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     plex_guid      TEXT    NOT NULL,
@@ -1461,6 +1472,44 @@ async def reset_stale_videoskip_jobs() -> int:
         )
         await conn.commit()
         return cursor.rowcount
+
+
+async def record_webhook_event(
+    event: str,
+    rating_key: str,
+    title: str,
+    result: str,
+    detail: str = "",
+) -> None:
+    """Persist one Plex webhook delivery for the diagnostics panel."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "INSERT INTO webhook_events(event, rating_key, title, result, detail) "
+            "VALUES(?,?,?,?,?)",
+            (event, rating_key, title, result, detail[:500]),
+        )
+        await conn.commit()
+
+
+async def get_webhook_status(limit: int = 10) -> dict:
+    """Return recent webhook deliveries and a total count."""
+    async with get_connection() as conn:
+        total_row = await (await conn.execute(
+            "SELECT COUNT(*) FROM webhook_events"
+        )).fetchone()
+        last_row = await (await conn.execute(
+            "SELECT received_at FROM webhook_events ORDER BY received_at DESC LIMIT 1"
+        )).fetchone()
+        rows = await conn.execute_fetchall(
+            "SELECT received_at, event, rating_key, title, result, detail "
+            "FROM webhook_events ORDER BY received_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        )
+    return {
+        "total": int(total_row[0]) if total_row else 0,
+        "last_received_at": last_row[0] if last_row else None,
+        "events": [dict(row) for row in rows],
+    }
 
 
 async def get_segment_counts_for_library(library_id: str) -> dict[str, int]:

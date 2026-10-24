@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
-import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw, Plus, Play, Pause, Trash2 } from 'lucide-react'
+import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw, Plus, Play, Pause, Trash2, AlertTriangle } from 'lucide-react'
 
 interface Settings {
   plex_url: string
@@ -37,6 +37,23 @@ interface QueueRecent {
   imported: number
   last_error: string
   updated_at: string
+}
+
+interface WebhookEvent {
+  received_at: string
+  event: string
+  rating_key: string
+  title: string
+  result: string
+  detail: string
+}
+
+interface WebhookStatus {
+  total: number
+  last_received_at: string | null
+  auto_fetch: boolean
+  token_required: boolean
+  events: WebhookEvent[]
 }
 
 interface QueueStatus {
@@ -133,6 +150,9 @@ export default function SettingsPage() {
   const [coverageLoading, setCoverageLoading] = useState(true)
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [queueLoading, setQueueLoading] = useState(true)
+  const [webhookStatus, setWebhookStatus] = useState<WebhookStatus | null>(null)
+  const [webhookLoading, setWebhookLoading] = useState(true)
+  const [webhookCopied, setWebhookCopied] = useState(false)
   const [queueAction, setQueueAction] = useState('')
   const [queueMessage, setQueueMessage] = useState<{ ok: boolean; message: string } | null>(null)
   const [restarting, setRestarting] = useState(false)
@@ -145,7 +165,8 @@ export default function SettingsPage() {
       api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
       api.get<VideoskipCoverage>('/api/videoskip/coverage').catch(() => null),
       api.get<QueueStatus>('/api/videoskip/queue').catch(() => null),
-    ]).then(([settings, libs, labels, cov, queue]) => {
+      api.get<WebhookStatus>('/api/webhooks/plex/status').catch(() => null),
+    ]).then(([settings, libs, labels, cov, queue, webhook]) => {
       setForm({ ...DEFAULT, ...settings })
       setLibraries(libs.libraries)
       setDetectorLabels(labels.labels)
@@ -153,6 +174,8 @@ export default function SettingsPage() {
       setCoverageLoading(false)
       setQueueStatus(queue)
       setQueueLoading(false)
+      setWebhookStatus(webhook)
+      setWebhookLoading(false)
       setLoading(false)
     })
   }, [])
@@ -226,6 +249,32 @@ export default function SettingsPage() {
       setQueueMessage({ ok: false, message: 'Could not load the VideoSkip queue.' })
     } finally {
       setQueueLoading(false)
+    }
+  }
+
+  const refreshWebhook = async () => {
+    setWebhookLoading(true)
+    try {
+      setWebhookStatus(await api.get<WebhookStatus>('/api/webhooks/plex/status'))
+    } catch {
+      setQueueMessage({ ok: false, message: 'Could not load webhook status.' })
+    } finally {
+      setWebhookLoading(false)
+    }
+  }
+
+  const webhookUrl = `${window.location.origin}/api/webhooks/plex`
+
+  const copyWebhook = async () => {
+    const url = webhookStatus?.token_required
+      ? `${webhookUrl}?token=<CLEANPLEX_WEBHOOK_TOKEN>`
+      : webhookUrl
+    try {
+      await navigator.clipboard.writeText(url)
+      setWebhookCopied(true)
+      setTimeout(() => setWebhookCopied(false), 2000)
+    } catch {
+      setQueueMessage({ ok: false, message: 'Clipboard unavailable; select the URL manually.' })
     }
   }
 
@@ -765,6 +814,83 @@ export default function SettingsPage() {
               <RotateCcw size={13} className={coverageLoading ? 'animate-spin' : ''} /> Coverage
             </button>
           </div>
+        </div>
+
+        <div className="rounded-xl border border-plex-border bg-black/15 p-3 space-y-2 mb-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-xs font-semibold text-gray-200">Plex webhook</h3>
+            <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-gray-500">
+              {webhookStatus?.token_required ? 'token required' : 'no token'}
+            </span>
+            <span className="text-[11px] text-gray-500">
+              {webhookStatus?.total ?? 0} delivery
+              {(webhookStatus?.total ?? 0) === 1 ? '' : 'ies'} received
+            </span>
+            <button
+              type="button"
+              onClick={refreshWebhook}
+              disabled={webhookLoading}
+              title="Refresh webhook status"
+              className="ml-auto p-1 text-gray-500 hover:text-gray-200 disabled:opacity-40"
+            >
+              <RotateCcw size={12} className={webhookLoading ? 'animate-spin' : ''} />
+            </button>
+          </div>
+
+          <p className="text-[11px] text-gray-600">
+            Add this URL in Plex → Settings → Webhooks. Plex fires{' '}
+            <code>library.new</code> when media is added, not when playback starts.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 truncate rounded border border-plex-border bg-plex-bg px-2 py-1.5 text-[11px] text-gray-300">
+              {webhookUrl}
+              {webhookStatus?.token_required ? '?token=…' : ''}
+            </code>
+            <button
+              type="button"
+              onClick={copyWebhook}
+              className="rounded border border-plex-border bg-plex-card px-2 py-1.5 text-[11px] text-gray-400 hover:text-white"
+            >
+              {webhookCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+
+          {webhookStatus?.last_received_at ? (
+            <p className="text-[11px] text-green-400">
+              Last delivery{' '}
+              {new Date(
+                webhookStatus.last_received_at.replace(' ', 'T') + 'Z',
+              ).toLocaleString()}
+              {webhookStatus.events[0] && (
+                <> · {webhookStatus.events[0].event || 'unknown'} · {webhookStatus.events[0].result}</>
+              )}
+            </p>
+          ) : (
+            <p className="text-[11px] text-amber-400">
+              No deliveries yet. Add the URL above, then add a movie to Plex (or use the
+              manual curl example in the README).
+            </p>
+          )}
+
+          {webhookStatus?.events.slice(0, 3).map((event, index) => (
+            <div
+              key={`${event.received_at}-${index}`}
+              className="flex items-center gap-2 rounded bg-black/20 px-2 py-1 text-[10px]"
+            >
+              <span className="w-16 flex-shrink-0 text-gray-600">
+                {event.event || 'invalid'}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-gray-400">
+                {event.title || event.rating_key || '—'}
+              </span>
+              <span className="text-gray-500">{event.result}</span>
+              {event.detail && (
+                <span title={event.detail} className="text-gray-600">
+                  <AlertTriangle size={10} />
+                </span>
+              )}
+            </div>
+          ))}
         </div>
 
         <p className="text-xs text-gray-600">

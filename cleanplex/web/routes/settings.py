@@ -90,6 +90,35 @@ async def get_plex_server_id():
         return {"machine_identifier": ""}
 
 
+@router.get("/plex-diagnostics")
+async def plex_diagnostics():
+    """Return server identity and a session snapshot for troubleshooting."""
+    try:
+        client = plex_mod.get_client()
+    except RuntimeError:
+        return {"configured": False, "server": None, "session_count": 0, "sessions": []}
+
+    info = await client.get_server_info()
+    sessions = await client.get_active_sessions()
+    return {
+        "configured": True,
+        "server": info,
+        "session_count": len(sessions),
+        "sessions": [
+            {
+                "title": s.full_title,
+                "user": s.user,
+                "client": s.client_title,
+                "media_type": s.media_type,
+                "position_ms": s.position_ms,
+                "controllable": s.is_controllable,
+            }
+            for s in sessions
+        ],
+        "last_session_error": client.last_session_error,
+    }
+
+
 @router.put("")
 async def update_settings(payload: SettingsPayload):
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
