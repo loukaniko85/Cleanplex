@@ -1,0 +1,71 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.db
+*.db-wal
+*.db-shm
+
+# Frontend build output (committed separately after build)
+frontend/node_modules/
+frontend/dist/
+
+# Thumbnails and runtime data
+~/.cleanplex/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Local runtime/log artifacts
+cleanplex.log
+cleanplex*.log
+*.log
+.coverage
+
+# One-off scripts
+backfill_*.py
+test_import.py
+test_sync.py
+ping_test.py
+_create_*.ps1
+
+# Generated web assets served by backend
+cleanplex/web/static/
+
+# Local one-off debug/maintenance helpers
+check_force_scan.py
+check_guid_mismatch.py
+check_housemaid.py
+check_labels_endpoint.py
+check_queue.py
+check_scanning.py
+check_segment_fields.py
+check_settings.py
+clear_queue.py
+debug_issues.py
+enqueue_housemaid.py
+find_housemaid.py
+find_scanning_job.py
+force_housemaid_api.py
+migrate_force_scan.py
+pause_db.py
+pause_scanner.py
+stop_scan.py
+test_encoding.py
+test_segments_api.py
+analyze_monamour_labels.py
+analyze_monamour_profiles.py
+apply_balanced_detection_profile.py
+check_scanner_status_api.py
+diagnose_monamour.py
+monitor_until_monamour.py
+run_monamour_test.py
+
+# The upstream repo tracks this real test even though the one-off pattern above matches it.
+!tests/unit/test_sync.py

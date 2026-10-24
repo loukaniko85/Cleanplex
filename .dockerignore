@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.db
+*.db-wal
+*.db-shm
+*.log
+.pytest_cache
+.coverage
+htmlcov
+frontend/node_modules
+frontend/dist
+tests
+cleanplex/web/static

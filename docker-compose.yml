@@ -1,0 +1,19 @@
+services:
+  cleanplex:
+    build: .
+    container_name: cleanplex
+    ports:
+      - "7979:7979"
+    volumes:
+      - cleanplex-data:/data
+      # Read-only media mount if you want the optional NudeNet frame scanner.
+      # The skip/skip-and-mute engine works without it; only local scanning needs
+      # the file paths to be visible inside the container.
+      # - /path/to/media:/media:ro
+    environment:
+      - CLEANPLEX_DATA=/data
+      - CLEANPLEX_PORT=7979
+    restart: unless-stopped
+
+volumes:
+  cleanplex-data:

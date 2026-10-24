@@ -1,0 +1,27 @@
+import { Routes, Route } from 'react-router-dom'
+import Layout from './components/Layout'
+import Dashboard from './pages/Dashboard'
+import Library from './pages/Library'
+import VideoSkip from './pages/VideoSkip'
+import Segments from './pages/Segments'
+import Markers from './pages/Markers'
+import Analytics from './pages/Analytics'
+import UsersPage from './pages/Users'
+import SettingsPage from './pages/Settings'
+
+export default function App() {
+  return (
+    <Layout>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/library" element={<Library />} />
+        <Route path="/videoskip" element={<VideoSkip />} />
+        <Route path="/segments" element={<Segments />} />
+        <Route path="/markers" element={<Markers />} />
+        <Route path="/analytics" element={<Analytics />} />
+        <Route path="/users" element={<UsersPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>
+    </Layout>
+  )
+}
