@@ -128,6 +128,33 @@ function msToTimecode(ms: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
 }
 
+/** Worker pool (same bounded-concurrency pattern as scanSelected): run one
+ *  request per item at a time, at most `concurrency` in flight, and return the
+ *  items whose request failed without aborting the rest of the batch. */
+async function runWithConcurrency(
+  items: string[],
+  fn: (item: string) => Promise<unknown>,
+  concurrency: number,
+): Promise<string[]> {
+  const queue = [...items]
+  const failures: string[] = []
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const item = queue.shift()
+      if (!item) break
+      try {
+        await fn(item)
+      } catch {
+        failures.push(item)
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  return failures
+}
+
 function renderLabels(labels?: string): React.ReactNode {
   if (!labels || !labels.trim()) return null
   const labelArray = labels.split(',').filter(l => l.trim())
@@ -153,6 +180,7 @@ export default function Library() {
   const [titles, setTitles] = useState<Title[]>([])
   const [loadingTitles, setLoadingTitles] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [pageError, setPageError] = useState('')
   const [scanning, setScanning] = useState<Record<string, boolean>>({})
   const [filter, setFilter] = useState('')
   const [ratingFilter, setRatingFilter] = useState<string>('all')
@@ -176,7 +204,9 @@ export default function Library() {
   const [plexBaseUrl, setPlexBaseUrl] = useState('')
 
   useEffect(() => {
-    api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
+    api.get<{ libraries: Library[] }>('/api/libraries')
+      .then(d => setLibraries(d.libraries))
+      .catch(() => setPageError('Could not load libraries from the database.'))
   }, [])
 
   // Fetch Plex server machine identifier and base URL for building web deep links.
@@ -271,6 +301,9 @@ export default function Library() {
       await api.delete(`/api/titles/${encodeURIComponent(guid)}/segments`)
       setLoadedSegments(prev => ({ ...prev, [guid]: [] }))
       setTitles(prev => prev.map(t => t.plex_guid === guid ? { ...t, segment_count: 0 } : t))
+      setPageError('')
+    } catch (e: any) {
+      setPageError(e?.message || 'Deleting segments failed.')
     } finally {
       setDeletingAllSegs(d => ({ ...d, [guid]: false }))
     }
@@ -279,14 +312,32 @@ export default function Library() {
   const deleteAllShowSegs = async (showKey: string, guids: string[]) => {
     setDeletingAllSegs(d => ({ ...d, [showKey]: true }))
     try {
-      await Promise.all(guids.map(guid => api.delete(`/api/titles/${encodeURIComponent(guid)}/segments`)))
+      // Bounded concurrency instead of unbounded Promise.all; one failed
+      // DELETE must not abort the whole batch.
+      const failures = await runWithConcurrency(
+        guids,
+        guid => api.delete(`/api/titles/${encodeURIComponent(guid)}/segments`),
+        4,
+      )
+      // Only clear state for episodes whose deletion actually succeeded.
+      const failedSet = new Set(failures)
+      const cleared = guids.filter(g => !failedSet.has(g))
       setLoadedSegments(prev => {
         const next = { ...prev }
-        for (const guid of guids) next[guid] = []
+        for (const guid of cleared) next[guid] = []
         return next
       })
-      const guidSet = new Set(guids)
-      setTitles(prev => prev.map(t => guidSet.has(t.plex_guid) ? { ...t, segment_count: 0 } : t))
+      const clearedSet = new Set(cleared)
+      setTitles(prev => prev.map(t => clearedSet.has(t.plex_guid) ? { ...t, segment_count: 0 } : t))
+      if (failures.length > 0) {
+        setPageError(
+          `Failed to delete segments for ${failures.length} of ${guids.length} episode(s).`,
+        )
+      } else {
+        setPageError('')
+      }
+    } catch (e: any) {
+      setPageError(e?.message || 'Deleting show segments failed.')
     } finally {
       setDeletingAllSegs(d => ({ ...d, [showKey]: false }))
     }
@@ -441,6 +492,9 @@ export default function Library() {
     setRefreshing(true)
     try {
       setTitles(await loadTitles(selected.id))
+      setPageError('')
+    } catch (e: any) {
+      setPageError(e?.message || 'Could not load titles.')
     } finally {
       setRefreshing(false)
     }
@@ -546,18 +600,38 @@ export default function Library() {
     setTitles(prev => prev.map(t => (guidSet.has(t.plex_guid) ? { ...t, ignored } : t)))
 
     try {
-      for (const guid of guids) {
-        await api.post(`/api/scan/title/${encodeURIComponent(guid)}/ignore`, { ignored })
-      }
+      // Bounded concurrency instead of a sequential loop; one failed request
+      // must not abort the rest of the batch.
+      const failures = await runWithConcurrency(
+        guids,
+        guid => api.post(`/api/scan/title/${encodeURIComponent(guid)}/ignore`, { ignored }),
+        4,
+      )
       setSelectedGuids(prev => prev.filter(g => !guids.includes(g)))
       setTitles(await loadTitles(selected.id))
-    } catch (err: any) {
+      if (failures.length > 0) {
+        // Roll back only the rows whose request failed and report the count.
+        const failedSet = new Set(failures)
+        setTitles(prev => prev.map(t => {
+          if (!failedSet.has(t.plex_guid)) return t
+          const previousIgnored = prevIgnoredByGuid.get(t.plex_guid)
+          return typeof previousIgnored === 'boolean' ? { ...t, ignored: previousIgnored } : t
+        }))
+        setPageError(
+          `Failed to update ignore status${label ? ` for ${label}` : ''} on ${failures.length} of ${guids.length} title(s).`,
+        )
+      } else {
+        setPageError('')
+      }
+    } catch (e: any) {
       setTitles(prev => prev.map(t => {
         if (!guidSet.has(t.plex_guid)) return t
         const previousIgnored = prevIgnoredByGuid.get(t.plex_guid)
         return typeof previousIgnored === 'boolean' ? { ...t, ignored: previousIgnored } : t
       }))
-      alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
+      setPageError(
+        `Failed to update ignore status${label ? ` for ${label}` : ''}: ${e?.message || 'Unknown error'}`,
+      )
     }
   }
 
@@ -747,6 +821,22 @@ export default function Library() {
             ))}
           </select>
         </div>
+
+        {/* Error banner: load/save/delete batch failures surface here */}
+        {pageError && (
+          <div className="mb-3 flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2">
+            <AlertTriangle size={13} className="flex-shrink-0 text-red-400" />
+            <p className="min-w-0 flex-1 text-xs text-red-300">{pageError}</p>
+            <button
+              onClick={() => setPageError('')}
+              title="Dismiss"
+              className="flex-shrink-0 px-1 text-xs text-red-400 hover:text-red-200"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {!selected ? (
           <div className="flex items-center justify-center h-64 text-gray-600">
             Select a library to browse titles

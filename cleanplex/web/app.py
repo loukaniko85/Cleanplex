@@ -49,7 +49,12 @@ def create_app() -> FastAPI:
             exc,
             traceback.format_exc(),
         )
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        # Never project exception text to clients: it can contain file paths,
+        # driver messages and upstream response bodies. The log keeps the detail.
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error — see the Cleanplex log for details."},
+        )
 
     app.add_middleware(
         CORSMiddleware,

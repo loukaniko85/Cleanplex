@@ -181,3 +181,24 @@ async def test_scan_library_skips_done_jobs(http_client):
     assert resp.status_code == 200
     assert resp.json()["queued"] == 0
     mock_enqueue.assert_not_awaited()
+
+
+# ── GET /api/scan/coverage ────────────────────────────────────────────────────
+
+async def test_scan_coverage_returns_totals_and_libraries(http_client):
+    await _make_job("cov-a", library_id="lib1")
+    await _make_job("cov-b", library_id="lib1")
+    await db.update_scan_job_status("cov-a", "done")
+    await db.insert_segment(
+        plex_guid="cov-a", title="cov-a", start_ms=0, end_ms=1000, source="scanner"
+    )
+
+    resp = await http_client.get("/api/scan/coverage")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2
+    assert body["scanned"] == 1
+    assert body["with_nudenet"] == 1
+    assert body["without_nudenet"] == 1
+    assert body["libraries"][0]["library_title"] == "Movies"

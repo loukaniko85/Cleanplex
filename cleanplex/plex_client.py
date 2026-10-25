@@ -9,10 +9,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 # TTL for per-show metadata cache; 10 minutes is long enough to cover a full
 # library-titles request without stale data causing visible issues.
 _SHOW_ART_CACHE_TTL_S = 600
+# Upper bound on entries; a 20k-episode library must not grow this without limit.
+_SHOW_ART_CACHE_MAX = 512
 
 import httpx
 from plexapi.server import PlexServer
@@ -479,7 +482,12 @@ class PlexClient:
         return result
 
     async def get_library_item(self, rating_key: str) -> MediaItem | None:
-        """Fetch one Plex item by rating key, for the webhook fast path."""
+        """Fetch one Plex item by rating key, for the webhook fast path.
+
+        Returns None when the item genuinely does not exist. Raises RuntimeError
+        when Plex could not be reached or rejected the request, so callers can
+        distinguish "not found" from "lookup failed" in their diagnostics.
+        """
         try:
             srv = await asyncio.to_thread(self._get_server)
             item = await asyncio.to_thread(srv.fetchItem, int(rating_key))
@@ -495,8 +503,10 @@ class PlexClient:
                     pass
             return self._media_item_from_plex(item, section_id, section_title)
         except Exception as exc:
+            # A stale token, a Plex 5xx and a network timeout used to be reported
+            # to the webhook as "item not found", hiding real failures.
             logger.warning("Could not fetch Plex item %s: %s", rating_key, exc)
-            return None
+            raise RuntimeError(f"Plex lookup failed for {rating_key}: {exc}") from exc
 
     def _media_item_from_plex(self, item: Any, library_id: str, library_title: str) -> MediaItem | None:
         try:
@@ -610,18 +620,45 @@ class PlexClient:
             season_rating_key = str(getattr(item, "parentRatingKey", "") or "")
             result = (show_guid, show_title, show_thumb, show_rating_key, season_rating_key)
             self._show_art_cache[rating_key] = (now, result)
+            # The cache is process-lifetime; prune expired entries (and, in the
+            # worst case, the oldest) so a large TV library cannot grow it forever.
+            if len(self._show_art_cache) > _SHOW_ART_CACHE_MAX:
+                expired = [
+                    key for key, (ts, _) in self._show_art_cache.items()
+                    if now - ts >= _SHOW_ART_CACHE_TTL_S
+                ]
+                for key in expired:
+                    self._show_art_cache.pop(key, None)
+                while len(self._show_art_cache) > _SHOW_ART_CACHE_MAX:
+                    oldest = min(self._show_art_cache, key=lambda k: self._show_art_cache[k][0])
+                    self._show_art_cache.pop(oldest, None)
             return result
         except Exception as exc:
             logger.debug("Failed to resolve show art for rating_key %s: %s", rating_key, exc)
             return "", "", "", "", ""
 
     async def fetch_image(self, image_path: str) -> tuple[bytes, str]:
-        """Fetch an image from Plex and return (bytes, content_type)."""
+        """Fetch an image from Plex and return (bytes, content_type).
+
+        `image_path` originates from a query parameter, so it is untrusted. A
+        value like "@attacker.com/x" becomes URL userinfo and would send the Plex
+        token (and any auth) to another host, so only relative paths that resolve
+        to the configured Plex origin are accepted.
+        """
         if not image_path:
+            return b"", ""
+
+        parsed = urlsplit(image_path)
+        if parsed.scheme or parsed.netloc or parsed.username or parsed.password:
+            logger.warning("Rejected absolute image path: %r", image_path[:120])
             return b"", ""
 
         path = image_path if image_path.startswith("/") else f"/{image_path}"
         url = f"{self.url}{path}"
+        # The final URL must still point at the configured Plex origin.
+        if urlsplit(url).netloc != urlsplit(self.url).netloc:
+            logger.warning("Rejected off-origin image path: %r", image_path[:120])
+            return b"", ""
         if "X-Plex-Token=" not in url:
             sep = "&" if "?" in url else "?"
             url = f"{url}{sep}X-Plex-Token={self.token}"

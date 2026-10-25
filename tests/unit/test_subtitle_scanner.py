@@ -181,7 +181,26 @@ async def test_scan_title_falls_back_to_the_embedded_track(setup_db, tmp_path):
     media = tmp_path / "movie.mkv"
     media.write_text("x", encoding="utf-8")
 
-    with patch.object(ss, "extract_embedded_subtitle", new=AsyncMock(return_value=SRT)):
+    with patch.object(
+        ss, "extract_embedded_subtitle", new=AsyncMock(return_value=(SRT, "eng"))
+    ):
         count = await ss.scan_title("guid-embed", "Embedded", str(media))
 
     assert count == 1
+    stored = await db.get_segments_for_guid("guid-embed")
+    assert stored[0]["language"] == "eng"
+
+
+async def test_scan_title_uses_the_fallback_tracks_real_language(setup_db, tmp_path):
+    """A Spanish fallback track must not be stamped as the requested English one."""
+    media = tmp_path / "movie.mkv"
+    media.write_text("x", encoding="utf-8")
+
+    with patch.object(
+        ss, "extract_embedded_subtitle", new=AsyncMock(return_value=(SRT, "spa"))
+    ):
+        count = await ss.scan_title("guid-fallback", "Fallback", str(media), language="eng")
+
+    assert count == 1
+    stored = await db.get_segments_for_guid("guid-fallback")
+    assert stored[0]["language"] == "spa"

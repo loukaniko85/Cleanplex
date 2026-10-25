@@ -15,6 +15,7 @@ from .paths import DATA_DIR, ensure_data_dirs
 from .watcher import session_watcher_loop, library_watcher_loop
 from .scanner import scanner_loop
 from .videoskip_queue import run_queue as videoskip_queue_loop
+from . import videoskip
 from .web.app import create_app
 from .bg_jobs import recover_stale_jobs
 
@@ -35,6 +36,9 @@ async def _amain() -> None:
     requeued = await db.reset_stale_videoskip_jobs()
     if requeued:
         logger.warning("Requeued %d stale VideoSkip job(s)", requeued)
+    stale_scans = await db.recover_stale_scanning_jobs()
+    if stale_scans:
+        logger.warning("Reset %d interrupted scan job(s) to pending", stale_scans)
 
     pruned = await db.prune_skip_events(int(await db.get_setting("skip_event_retention_days", "90")))
     if pruned:
@@ -74,14 +78,31 @@ async def _amain() -> None:
 
     logger.info("Web UI available at http://%s:%d", host, port)
 
-    # ── Run all loops concurrently ─────────────────────────────────────────
-    await asyncio.gather(
-        server.serve(),
-        session_watcher_loop(get_config, get_client),
-        library_watcher_loop(get_config, get_client),
-        scanner_loop(get_config),
-        videoskip_queue_loop(),
-    )
+    # ── Run all loops concurrently, shutting down gracefully ──────────────────
+    # server.serve() returns on SIGTERM/SIGINT. The background loops are `while
+    # True` by design, so they must be cancelled explicitly — otherwise the
+    # gather never completes and systemd/NSSM/Docker escalate to SIGKILL
+    # mid-write. Long-lived HTTP clients are closed on the way out (§5.3).
+    background = [
+        asyncio.create_task(session_watcher_loop(get_config, get_client)),
+        asyncio.create_task(library_watcher_loop(get_config, get_client)),
+        asyncio.create_task(scanner_loop(get_config)),
+        asyncio.create_task(videoskip_queue_loop()),
+    ]
+    try:
+        await server.serve()
+    finally:
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await videoskip.close_client()
+        try:
+            plex_client = plex_mod.get_client()
+        except RuntimeError:
+            plex_client = None
+        if plex_client is not None:
+            await plex_client.close()
+        logger.info("Cleanplex stopped cleanly")
 
 
 def main() -> None:

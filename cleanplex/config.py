@@ -40,9 +40,33 @@ class Config:
     async def load(cls) -> "Config":
         s = await db.get_all_settings()
 
-        def _time(val: str) -> time:
-            h, m = val.split(":")
-            return time(int(h), int(m))
+        def _time(val: str, fallback: time) -> time:
+            """Parse 'HH:MM', falling back instead of raising.
+
+            A malformed value used to raise inside every watcher loop, escape
+            asyncio.gather and kill the process — and because the bad value was
+            persisted, the process crashed again on every restart.
+            """
+            try:
+                h, m = val.strip().split(":")
+                parsed = time(int(h), int(m))
+                return parsed
+            except (AttributeError, TypeError, ValueError):
+                return fallback
+
+        def _int(val: str, fallback: int, minimum: int | None = None) -> int:
+            try:
+                parsed = int(val)
+            except (TypeError, ValueError):
+                return fallback
+            return max(minimum, parsed) if minimum is not None else parsed
+
+        def _float(val: str, fallback: float, minimum: float | None = None) -> float:
+            try:
+                parsed = float(val)
+            except (TypeError, ValueError):
+                return fallback
+            return max(minimum, parsed) if minimum is not None else parsed
 
         def _labels(val: str) -> list[str]:
             try:
@@ -57,23 +81,27 @@ class Config:
         return cls(
             plex_url=s.get("plex_url", ""),
             plex_token=s.get("plex_token", ""),
-            poll_interval=int(s.get("poll_interval", "5")),
-            confidence_threshold=float(s.get("confidence_threshold", "0.6")),
-            skip_buffer_ms=int(s.get("skip_buffer_ms", "3000")),
+            poll_interval=_int(s.get("poll_interval", "5"), 5, minimum=1),
+            confidence_threshold=_float(s.get("confidence_threshold", "0.6"), 0.6),
+            skip_buffer_ms=_int(s.get("skip_buffer_ms", "3000"), 3000),
             # Fall back to skip_buffer_ms so a settings row written before the split
             # still governs both edges rather than silently reverting to the default.
-            pre_buffer_ms=int(s.get("pre_buffer_ms") or s.get("skip_buffer_ms", "3000")),
-            post_buffer_ms=int(s.get("post_buffer_ms") or s.get("skip_buffer_ms", "3000")),
-            scan_step_ms=int(s.get("scan_step_ms", "5000")),
-            scan_workers=max(1, int(s.get("scan_workers", "2"))),
+            pre_buffer_ms=_int(
+                s.get("pre_buffer_ms") or s.get("skip_buffer_ms", "3000"), 3000
+            ),
+            post_buffer_ms=_int(
+                s.get("post_buffer_ms") or s.get("skip_buffer_ms", "3000"), 3000
+            ),
+            scan_step_ms=_int(s.get("scan_step_ms", "5000"), 5000, minimum=500),
+            scan_workers=_int(s.get("scan_workers", "2"), 2, minimum=1),
             nudenet_model=s.get("nudenet_model", "320n"),
             nudenet_model_path=s.get("nudenet_model_path", ""),
-            segment_gap_ms=int(s.get("segment_gap_ms", "12000")),
-            segment_min_hits=int(s.get("segment_min_hits", "1")),
+            segment_gap_ms=_int(s.get("segment_gap_ms", "12000"), 12000),
+            segment_min_hits=_int(s.get("segment_min_hits", "1"), 1, minimum=1),
             scan_ratings=_labels(s.get("scan_ratings", "[]")),
             scan_labels=_labels(s.get("scan_labels", "[]")),
-            scan_window_start=_time(s.get("scan_window_start", "23:00")),
-            scan_window_end=_time(s.get("scan_window_end", "06:00")),
+            scan_window_start=_time(s.get("scan_window_start", "23:00"), time(23, 0)),
+            scan_window_end=_time(s.get("scan_window_end", "06:00"), time(6, 0)),
             log_level=s.get("log_level", "INFO"),
         )
 

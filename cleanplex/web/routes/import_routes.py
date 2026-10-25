@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...logger import get_logger
 from ... import database as db
@@ -17,11 +17,14 @@ router = APIRouter(prefix="/api/segments", tags=["import"])
 
 # Uploaded skip files are small text documents; anything larger is not one.
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+# Pasted lists are small too; bound the JSON field so one request cannot buffer
+# an unbounded string.
+MAX_PASTE_CHARS = 200_000
 
 
 class PastePayload(BaseModel):
     plex_guid: str
-    text: str
+    text: str = Field(..., max_length=MAX_PASTE_CHARS)
     replace: bool = False
 
 
@@ -53,9 +56,16 @@ async def import_skip_file(
     replace: bool = Form(False),
 ):
     """Import a .skp, .edl, .mcf or .txt skip file for one title."""
-    raw = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=422, detail="Skip file is too large to be one.")
+    # Read in bounded chunks: reading the whole body first meant a multi-GB
+    # upload could exhaust memory before the size check ran.
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(64 * 1024):
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Skip file is too large to be one.")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
 
     suffix = Path(file.filename or "").suffix.lower()
     module = importers.PARSERS.get(suffix)
@@ -67,7 +77,9 @@ async def import_skip_file(
         )
 
     try:
-        segments = module.parse(raw.decode("utf-8", errors="replace"))
+        # utf-8-sig: hand-edited files on Windows often carry a BOM, which would
+        # otherwise break the `.mcf` header check.
+        segments = module.parse(raw.decode("utf-8-sig", errors="replace"))
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

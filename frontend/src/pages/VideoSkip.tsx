@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import {
   Sparkles,
@@ -94,6 +94,10 @@ export default function VideoSkip() {
   const [searching, setSearching] = useState(false)
   const [results, setResults] = useState<SearchResult[] | null>(null)
   const [searchError, setSearchError] = useState('')
+  const [queuedError, setQueuedError] = useState(false)
+  // Abort any in-flight search when a new one starts or the page unmounts so a
+  // slow older response cannot overwrite a newer one's results.
+  const searchAbort = useRef<AbortController | null>(null)
 
   const refresh = async () => {
     setLoading(true)
@@ -115,11 +119,33 @@ export default function VideoSkip() {
     refresh()
     // Queue depth changes while a sweep runs; polling keeps the page honest
     // without touching the Exchange (this is local DB state only).
-    const id = setInterval(() => {
-      api.get<QueueStatus>('/api/videoskip/queue').then(setQueue).catch(() => {})
-    }, 8000)
-    return () => clearInterval(id)
+    // AbortController is created per tick so stale responses from a previous
+    // tick cannot overwrite state after a newer tick has already updated it.
+    let controller = new AbortController()
+
+    const tick = async () => {
+      controller.abort()
+      controller = new AbortController()
+      try {
+        setQueue(await api.get<QueueStatus>('/api/videoskip/queue', { signal: controller.signal }))
+        setQueuedError(false)
+      } catch (e) {
+        // Ignore intentional aborts from the next tick / unmount; surface
+        // everything else instead of swallowing it silently.
+        if ((e as any)?.name !== 'AbortError') setQueuedError(true)
+      }
+    }
+
+    tick()
+    const id = setInterval(tick, 8000)
+    return () => {
+      clearInterval(id)
+      controller.abort()
+    }
   }, [])
+
+  // Kill any in-flight search when the page unmounts.
+  useEffect(() => () => searchAbort.current?.abort(), [])
 
   const run = async (
     key: string,
@@ -186,18 +212,29 @@ export default function VideoSkip() {
 
   const search = async () => {
     if (!query.trim()) return
+    // Abort any in-flight search before starting a new one; an older response
+    // must never overwrite a newer one's results.
+    searchAbort.current?.abort()
+    searchAbort.current = new AbortController()
+    const signal = searchAbort.current.signal
     setSearching(true)
     setSearchError('')
     setResults(null)
     try {
       const r = await api.get<{ results: SearchResult[] }>(
         `/api/videoskip/search?q=${encodeURIComponent(query)}`,
+        { signal },
       )
+      if (signal.aborted) return // superseded — do not touch state
       setResults(r.results)
     } catch (e: any) {
+      // Aborted requests belong to a superseded transaction; the newer search
+      // owns the UI state now.
+      if ((e as any)?.name === 'AbortError' || signal.aborted) return
       setSearchError(e?.message ?? 'Search failed.')
     } finally {
-      setSearching(false)
+      // Only clear the spinner if this invocation is still the live one.
+      if (!signal.aborted) setSearching(false)
     }
   }
 
@@ -309,6 +346,13 @@ export default function VideoSkip() {
               </div>
             ))}
           </div>
+
+          {queuedError && (
+            <p className="mt-3 flex items-center gap-1.5 text-xs text-red-400">
+              <AlertTriangle size={12} />
+              Queue updates failing — retrying automatically.
+            </p>
+          )}
 
           {queue?.current && (
             <p className="mt-3 truncate text-xs text-plex-orange">

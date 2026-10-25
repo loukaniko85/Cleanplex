@@ -107,27 +107,28 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
         try:
             client = plex_mod.get_client()
             items = await client.get_library_items(library_id)
-            for item in items:
-                if item.file_path:
-                    await db.upsert_scan_job(
-                        plex_guid=item.plex_guid,
-                        title=item.title,
-                        file_path=item.file_path,
-                        rating_key=item.rating_key,
-                        library_id=item.library_id,
-                        library_title=item.library_title,
-                        content_rating=item.content_rating,
-                        media_type=item.media_type,
-                        year=item.year,
-                        show_guid=item.show_guid,
-                        show_rating_key=item.show_rating_key,
-                        part_files=json.dumps(item.part_files),
-                        duration_ms=item.duration_ms,
-                        imdb_id=item.imdb_id,
-                        tmdb_id=item.tmdb_id,
-                        season=item.season,
-                        episode=item.episode,
-                    )
+            await db.upsert_scan_jobs_bulk([
+                {
+                    "plex_guid": item.plex_guid,
+                    "title": item.title,
+                    "file_path": item.file_path,
+                    "rating_key": item.rating_key,
+                    "library_id": item.library_id,
+                    "library_title": item.library_title,
+                    "content_rating": item.content_rating,
+                    "media_type": item.media_type,
+                    "year": item.year,
+                    "show_guid": item.show_guid,
+                    "show_rating_key": item.show_rating_key,
+                    "part_files": json.dumps(item.part_files),
+                    "duration_ms": item.duration_ms,
+                    "imdb_id": item.imdb_id,
+                    "tmdb_id": item.tmdb_id,
+                    "season": item.season,
+                    "episode": item.episode,
+                }
+                for item in items if item.file_path
+            ])
             jobs = await db.get_scan_jobs_by_library(library_id)
         except RuntimeError:
             return {"ok": False, "error": "Plex not configured"}
@@ -163,6 +164,12 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
 async def pause_scanner():
     scan_mod.pause_scanner()
     return {"ok": True, "paused": True}
+
+
+@router.get("/coverage")
+async def scan_coverage():
+    """Return per-library local-scan (NudeNet) coverage for the Settings panel."""
+    return await db.get_scan_coverage()
 
 
 @router.post("/resume")

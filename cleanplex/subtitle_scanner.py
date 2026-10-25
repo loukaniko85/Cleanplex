@@ -123,8 +123,16 @@ def find_sidecar_subtitle(media_path: str) -> Path | None:
     return None
 
 
-async def extract_embedded_subtitle(file_path: str, language: str = "eng") -> str | None:
-    """Pull the first matching embedded subtitle track out as SRT text."""
+async def extract_embedded_subtitle(
+    file_path: str, language: str = "eng"
+) -> tuple[str, str] | None:
+    """Pull the first matching embedded subtitle track out as SRT text.
+
+    Returns (srt_text, actual_language). `actual_language` is the selected
+    track's own tag (empty when Plex/ffprobe did not name it), not the requested
+    language: mutes authored from a fallback track must be stamped with the track
+    they came from or they will fire against the wrong audio when both exist.
+    """
     probe = await asyncio.create_subprocess_exec(
         _FFPROBE_BIN,
         "-loglevel", "error",
@@ -135,7 +143,13 @@ async def extract_embedded_subtitle(file_path: str, language: str = "eng") -> st
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, _ = await probe.communicate()
+    try:
+        out, _ = await asyncio.wait_for(probe.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        probe.kill()
+        await probe.wait()
+        logger.warning("ffprobe timed out reading subtitle streams for %s", file_path)
+        return None
     if probe.returncode != 0:
         return None
 
@@ -146,11 +160,13 @@ async def extract_embedded_subtitle(file_path: str, language: str = "eng") -> st
     if not streams:
         return None
 
-    # Prefer the requested language, but any subtitle track beats none.
+    # Prefer the requested language, but any subtitle track beats none. Track the
+    # actual tag either way so the emitted segments carry the right language.
     chosen = next(
         (i for i, s in enumerate(streams) if (s.get("tags") or {}).get("language") == language),
         0,
     )
+    actual_language = (streams[chosen].get("tags") or {}).get("language") or ""
 
     proc = await asyncio.create_subprocess_exec(
         _FFMPEG_BIN,
@@ -162,10 +178,16 @@ async def extract_embedded_subtitle(file_path: str, language: str = "eng") -> st
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    srt_out, _ = await proc.communicate()
+    try:
+        srt_out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("ffmpeg timed out extracting subtitles from %s", file_path)
+        return None
     if proc.returncode != 0 or not srt_out:
         return None
-    return srt_out.decode("utf-8", errors="replace")
+    return srt_out.decode("utf-8", errors="replace"), actual_language
 
 
 async def load_wordlist() -> list[str]:
@@ -183,11 +205,22 @@ async def load_wordlist() -> list[str]:
 
 async def scan_title(plex_guid: str, title: str, file_path: str, language: str = "eng") -> int:
     """Scan one title's subtitles and store language segments. Returns the count."""
+    segment_language = language
     sidecar = find_sidecar_subtitle(file_path)
     if sidecar is not None:
-        text = sidecar.read_text(encoding="utf-8", errors="replace")
+        # A film's SRT is hundreds of KB; never read that on the event loop.
+        text = await asyncio.to_thread(
+            sidecar.read_text, encoding="utf-8", errors="replace"
+        )
     else:
-        text = await extract_embedded_subtitle(file_path, language)
+        extracted = await extract_embedded_subtitle(file_path, language)
+        if extracted is None:
+            text = None
+        else:
+            text, embedded_language = extracted
+            # Empty tag means ffprobe did not name the track: emit no language so
+            # the segment applies to whatever track is playing.
+            segment_language = embedded_language or ""
 
     if not text:
         logger.info("No subtitles available for '%s' — nothing to scan", title)
@@ -197,7 +230,7 @@ async def scan_title(plex_guid: str, title: str, file_path: str, language: str =
     segments = find_hits(parse_subtitles(text), pattern)
     # Stamp the track these timings came from: they do not hold for a dub.
     for seg in segments:
-        seg["language"] = language
+        seg["language"] = segment_language
     if not segments:
         logger.info("No listed words found in subtitles for '%s'", title)
         return 0

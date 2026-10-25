@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw, Plus, Play, Pause, Trash2, AlertTriangle } from 'lucide-react'
@@ -97,6 +97,27 @@ interface VideoskipCoverage {
   libraries: LibraryCoverage[]
 }
 
+interface ScanLibraryCoverage {
+  library_id: string
+  library_title: string
+  total: number
+  scanned: number
+  with_segments: number
+  with_nudenet: number
+  without_segments: number
+  without_nudenet: number
+}
+
+interface ScanCoverage {
+  total: number
+  scanned: number
+  with_segments: number
+  with_nudenet: number
+  without_segments: number
+  without_nudenet: number
+  libraries: ScanLibraryCoverage[]
+}
+
 const DEFAULT: Settings = {
   plex_url: '',
   plex_token: '',
@@ -148,6 +169,7 @@ export default function SettingsPage() {
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
   const [coverage, setCoverage] = useState<VideoskipCoverage | null>(null)
   const [coverageLoading, setCoverageLoading] = useState(true)
+  const [scanCoverage, setScanCoverage] = useState<ScanCoverage | null>(null)
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [queueLoading, setQueueLoading] = useState(true)
   const [webhookStatus, setWebhookStatus] = useState<WebhookStatus | null>(null)
@@ -157,28 +179,46 @@ export default function SettingsPage() {
   const [queueMessage, setQueueMessage] = useState<{ ok: boolean; message: string } | null>(null)
   const [restarting, setRestarting] = useState(false)
   const [restarted, setRestarted] = useState(false)
+  const [loadError, setLoadError] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true)
+    setLoadError(false)
     Promise.all([
       api.get<Settings>('/api/settings'),
       api.get<{ libraries: Library[] }>('/api/libraries').catch(() => ({ libraries: [] })),
       api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
       api.get<VideoskipCoverage>('/api/videoskip/coverage').catch(() => null),
+      api.get<ScanCoverage>('/api/scan/coverage').catch(() => null),
       api.get<QueueStatus>('/api/videoskip/queue').catch(() => null),
       api.get<WebhookStatus>('/api/webhooks/plex/status').catch(() => null),
-    ]).then(([settings, libs, labels, cov, queue, webhook]) => {
-      setForm({ ...DEFAULT, ...settings })
-      setLibraries(libs.libraries)
-      setDetectorLabels(labels.labels)
-      setCoverage(cov)
-      setCoverageLoading(false)
-      setQueueStatus(queue)
-      setQueueLoading(false)
-      setWebhookStatus(webhook)
-      setWebhookLoading(false)
-      setLoading(false)
-    })
+    ])
+      .then(([settings, libs, labels, cov, scanCov, queue, webhook]) => {
+        setForm({ ...DEFAULT, ...settings })
+        setLibraries(libs.libraries)
+        setDetectorLabels(labels.labels)
+        setCoverage(cov)
+        setScanCoverage(scanCov)
+        setQueueStatus(queue)
+        setWebhookStatus(webhook)
+      })
+      .catch(() => {
+        // Only /api/settings can reject here (the rest carry their own catch
+        // fallbacks) — without it there is no form to render.
+        setLoadError(true)
+      })
+      .finally(() => {
+        setLoading(false)
+        setCoverageLoading(false)
+        setQueueLoading(false)
+        setWebhookLoading(false)
+      })
   }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   const excludedIds: string[] = (() => {
     try { return JSON.parse(form.excluded_library_ids) } catch { return [] }
@@ -208,10 +248,14 @@ export default function SettingsPage() {
   const save = async () => {
     setSaving(true)
     setSaved(false)
+    // Cleared here so a previous failure does not linger past a success.
+    setSaveError('')
     try {
       await api.put('/api/settings', form)
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
+    } catch (e: any) {
+      setSaveError(e?.message ?? 'Saving settings failed.')
     } finally {
       setSaving(false)
     }
@@ -220,11 +264,13 @@ export default function SettingsPage() {
   const testConnection = async () => {
     setTesting(true)
     setTestResult(null)
-    // Save first so the server uses current values
-    await api.put('/api/settings', { plex_url: form.plex_url, plex_token: form.plex_token })
     try {
+      // Save first so the server uses current values
+      await api.put('/api/settings', { plex_url: form.plex_url, plex_token: form.plex_token })
       const r = await api.post<{ ok: boolean; message: string }>('/api/settings/test-connection')
       setTestResult(r)
+    } catch (e: any) {
+      setTestResult({ ok: false, message: e?.message ?? 'Connection test failed.' })
     } finally {
       setTesting(false)
     }
@@ -233,9 +279,14 @@ export default function SettingsPage() {
   const refreshCoverage = async () => {
     setCoverageLoading(true)
     try {
-      setCoverage(await api.get<VideoskipCoverage>('/api/videoskip/coverage'))
+      const [cov, scanCov] = await Promise.all([
+        api.get<VideoskipCoverage>('/api/videoskip/coverage'),
+        api.get<ScanCoverage>('/api/scan/coverage').catch(() => null),
+      ])
+      setCoverage(cov)
+      setScanCoverage(scanCov)
     } catch {
-      setQueueMessage({ ok: false, message: 'Could not load VideoSkip coverage.' })
+      setQueueMessage({ ok: false, message: 'Could not load coverage.' })
     } finally {
       setCoverageLoading(false)
     }
@@ -356,6 +407,22 @@ export default function SettingsPage() {
   const inputCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/60 transition-colors"
 
   if (loading) return <div className="text-gray-500 text-sm">Loading...</div>
+
+  if (loadError)
+    return (
+      <div className="max-w-xl space-y-4">
+        <h1 className="text-2xl font-bold text-gray-100">Settings</h1>
+        <p className="flex items-center gap-2 text-sm text-red-400">
+          <AlertTriangle size={15} /> Could not load settings. The API may be down.
+        </p>
+        <button
+          onClick={load}
+          className="px-4 py-2 text-sm bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors flex items-center gap-2"
+        >
+          <RotateCcw size={14} /> Retry
+        </button>
+      </div>
+    )
 
   return (
     <div className="max-w-xl space-y-8">
@@ -562,6 +629,59 @@ export default function SettingsPage() {
           </div>
         </section>
       )}
+
+      {/* Local scan (NudeNet) coverage */}
+      <section>
+        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Local scanning (NudeNet)</h2>
+        <p className="text-xs text-gray-500 mb-4">
+          Frame-by-frame nudity detection runs locally on the Plex host, so this coverage is
+          independent of any import. "Scanned" counts titles the scanner finished; "From NudeNet"
+          counts titles that actually own ML-produced segments.
+        </p>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+          {[
+            { label: 'Titles', value: scanCoverage?.total ?? 0, tone: 'text-gray-100' },
+            { label: 'Scanned', value: scanCoverage?.scanned ?? 0, tone: 'text-green-400' },
+            { label: 'From NudeNet', value: scanCoverage?.with_nudenet ?? 0, tone: 'text-blue-400' },
+            { label: 'No NudeNet', value: scanCoverage?.without_nudenet ?? 0, tone: 'text-amber-400' },
+          ].map(card => (
+            <div key={card.label} className="bg-plex-card border border-plex-border rounded-lg px-3 py-2">
+              <p className="text-[11px] text-gray-500">{card.label}</p>
+              <p className={`text-xl font-semibold ${card.tone}`}>
+                {coverageLoading ? '—' : card.value}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {scanCoverage && scanCoverage.libraries.length > 0 && (
+          <div className="mb-4 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-gray-500">
+                <tr>
+                  <th className="text-left font-medium pb-1">Library</th>
+                  <th className="text-right font-medium pb-1">Titles</th>
+                  <th className="text-right font-medium pb-1">Scanned</th>
+                  <th className="text-right font-medium pb-1">NudeNet</th>
+                  <th className="text-right font-medium pb-1">No NudeNet</th>
+                </tr>
+              </thead>
+              <tbody className="text-gray-300">
+                {scanCoverage.libraries.map(lib => (
+                  <tr key={lib.library_id || lib.library_title} className="border-t border-plex-border/50">
+                    <td className="py-1.5 pr-2 text-gray-200">{lib.library_title}</td>
+                    <td className="text-right py-1.5 px-1">{lib.total}</td>
+                    <td className="text-right py-1.5 px-1 text-green-400">{lib.scanned}</td>
+                    <td className="text-right py-1.5 px-1 text-blue-400">{lib.with_nudenet}</td>
+                    <td className="text-right py-1.5 px-1 text-amber-400">{lib.without_nudenet}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       {/* VideoSkip Exchange coverage */}
       <section>
@@ -914,6 +1034,11 @@ export default function SettingsPage() {
           <span className="flex items-center gap-1.5 text-sm text-green-400">
             <CheckCircle2 size={15} /> Saved
           </span>
+        )}
+        {saveError && (
+          <p className="flex items-center gap-1.5 text-sm text-red-400">
+            <XCircle size={15} /> {saveError}
+          </p>
         )}
         <button
           onClick={restartScanner}

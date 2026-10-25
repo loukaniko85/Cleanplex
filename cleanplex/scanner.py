@@ -53,6 +53,10 @@ _queue_wakeup_event: asyncio.Event = asyncio.Event()
 _skip_requested_guids: set[str] = set()
 _worker_pool_size: int = 1
 _restart_requested: bool = False
+# Jobs a worker pulled while outside the scan window. They are held here instead
+# of being re-enqueued: enqueue() trips the wakeup event the worker is about to
+# wait on, which made the previous code spin at full speed all night.
+_deferred_guids: set[str] = set()
 
 # Guards all read-check-modify operations on _current_guids, _queued_normal,
 # and _queued_force to prevent duplicate or lost entries under concurrent workers.
@@ -757,9 +761,11 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
         in_window = config.is_scan_window()
 
         if not is_force_scan and not in_window:
-            # Outside window and not force-scan, re-queue and wait
-            logger.debug(f"Job {plex_guid} outside scan window and not force-scan, re-queuing")
-            await enqueue(plex_guid)
+            # Outside the scan window: hold the job rather than re-enqueueing it.
+            # enqueue() sets _queue_wakeup_event, so the old code woke instantly,
+            # pulled the same job again and hot-spun (with a DB query per cycle)
+            # for the whole window instead of sleeping.
+            _deferred_guids.add(plex_guid)
             if not _paused:
                 pause_scanner()
             # If a force-scan job arrived, don't sleep; process it immediately.
@@ -770,6 +776,13 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
             except asyncio.TimeoutError:
                 pass
             _queue_wakeup_event.clear()
+            # When the window opens, put the held jobs back in the queue.
+            if config.is_scan_window():
+                held = list(_deferred_guids)
+                _deferred_guids.clear()
+                for held_guid in held:
+                    if held_guid not in _queued_normal and held_guid not in _current_guids:
+                        await enqueue(held_guid)
             continue
 
         if _paused:
@@ -797,6 +810,10 @@ async def scanner_loop(get_config_fn) -> None:
     global _worker_pool_size, _restart_requested
 
     while True:
+        # A worker pool restart cancels in-flight scans; CancelledError bypasses
+        # scan_video's `except Exception`, so those rows are still "scanning".
+        # Reset them before re-applying queue ordering or they are never retried.
+        await db.recover_stale_scanning_jobs()
         # Re-apply queue ordering on every start/restart so settings changes
         # (or an explicit reorder-queue API call) take effect immediately.
         await enqueue_pending()

@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ...logger import get_logger
@@ -9,6 +9,9 @@ from .segments import _invalidate_scan_labels_cache
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+# Sent out instead of the Plex token; echoing it back on PUT means "unchanged".
+REDACTED_TOKEN = "__stored__"
 
 DETECTOR_LABELS = [
     # EXPOSED categories
@@ -73,7 +76,16 @@ class ValidateModelPathPayload(BaseModel):
 
 @router.get("")
 async def get_settings():
-    return await db.get_all_settings()
+    """Return all settings for the UI, without the Plex token.
+
+    Every dashboard/library page fetches this endpoint; handing the raw Plex admin
+    token to any LAN peer (default deployment has no auth) was a full takeover
+    path. The UI only needs to know that a token is stored.
+    """
+    settings = await db.get_all_settings()
+    if settings.get("plex_token"):
+        settings["plex_token"] = REDACTED_TOKEN
+    return settings
 
 
 @router.get("/plex-server-id")
@@ -119,9 +131,33 @@ async def plex_diagnostics():
     }
 
 
+def _require_time_setting(value: str | None, name: str) -> None:
+    """Reject malformed HH:MM values before they are persisted.
+
+    Config.load tolerates bad values at runtime, but accepting them means the
+    UI looks saved while the scanner silently runs on defaults.
+    """
+    if value is None:
+        return
+    try:
+        hours, minutes = value.strip().split(":")
+        if 0 <= int(hours) < 24 and 0 <= int(minutes) < 60:
+            return
+    except (AttributeError, ValueError):
+        pass
+    raise HTTPException(status_code=422, detail=f"{name} must be HH:MM (00:00–23:59)")
+
+
 @router.put("")
 async def update_settings(payload: SettingsPayload):
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
+
+    # The GET endpoint redacts the token; an unchanged form echoes the sentinel.
+    if data.get("plex_token") == REDACTED_TOKEN:
+        data.pop("plex_token", None)
+
+    _require_time_setting(data.get("scan_window_start"), "scan_window_start")
+    _require_time_setting(data.get("scan_window_end"), "scan_window_end")
     
     # Check if scan_workers is being changed
     scan_workers_changed = False
@@ -160,7 +196,12 @@ async def test_connection():
     if not url or not token:
         return {"ok": False, "message": "Plex URL and token are required"}
     client = plex_mod.PlexClient(url, token)
-    ok, message = await client.test_connection()
+    try:
+        ok, message = await client.test_connection()
+    finally:
+        # One AsyncClient per PlexClient, always closed (§5.3) — this route used
+        # to leak a client and its socket pool on every "test" press.
+        await client.close()
     return {"ok": ok, "message": message}
 
 

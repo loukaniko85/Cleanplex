@@ -84,9 +84,44 @@ async def test_test_connection_returns_ok_true(http_client):
     with patch("cleanplex.web.routes.settings.plex_mod.PlexClient") as MockClient:
         instance = MockClient.return_value
         instance.test_connection = AsyncMock(return_value=(True, "My Plex"))
+        instance.close = AsyncMock()
         resp = await http_client.post("/api/settings/test-connection")
     assert resp.json()["ok"] is True
     assert resp.json()["message"] == "My Plex"
+    instance.close.assert_awaited_once()
+
+
+async def test_get_settings_redacts_the_plex_token(http_client):
+    await db.set_setting("plex_token", "super-secret-plex-token")
+
+    resp = await http_client.get("/api/settings")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["plex_token"] == "__stored__"
+    assert "super-secret" not in resp.text
+
+
+async def test_update_settings_keeps_the_stored_token_when_sentinel_is_echoed(http_client):
+    await db.set_setting("plex_token", "super-secret-plex-token")
+
+    with patch("cleanplex.web.routes.settings.scan_mod.request_scanner_restart", new=AsyncMock()):
+        resp = await http_client.put(
+            "/api/settings", json={"plex_token": "__stored__", "log_level": "DEBUG"}
+        )
+
+    assert resp.status_code == 200
+    assert await db.get_setting("plex_token") == "super-secret-plex-token"
+
+
+async def test_update_settings_rejects_a_malformed_scan_window(http_client):
+    with patch("cleanplex.web.routes.settings.scan_mod.request_scanner_restart", new=AsyncMock()):
+        resp = await http_client.put(
+            "/api/settings", json={"scan_window_start": "25:99"}
+        )
+
+    assert resp.status_code == 422
+    assert "HH:MM" in resp.json()["detail"]
 
 
 # ── GET /api/settings/detector-labels ─────────────────────────────────────────

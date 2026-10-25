@@ -158,8 +158,10 @@ async def prepare_segments_for_upload(instance_name: str) -> dict[str, dict[str,
             logger.warning(f"Skipping {item['title']}: no file path")
             continue
         
-        # Compute file hash
-        file_hash = compute_file_hash(file_path)
+        # Compute file hash. Hashing reads the whole media file, so it must not
+        # run on the event loop (§5.1) — a first sync on a large library used to
+        # stall every session poll and skip for the entire hashing time.
+        file_hash = await asyncio.to_thread(compute_file_hash, file_path)
         if not file_hash:
             logger.warning(f"Skipping {item['title']}: could not compute file hash")
             continue
@@ -338,7 +340,7 @@ async def get_local_file_hashes() -> list[str]:
     hashes: list[str] = []
     local_library = await get_local_library_for_sync()
     for item in local_library:
-        file_hash = compute_file_hash(item.get("file_path", ""))
+        file_hash = await asyncio.to_thread(compute_file_hash, item.get("file_path", ""))
         if file_hash:
             hashes.append(file_hash)
     return list(dict.fromkeys(hashes))

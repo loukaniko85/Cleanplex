@@ -112,11 +112,14 @@ async def extract_frames_batch(
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        # Nothing reads stderr. A piped stream can fill the OS buffer on noisy
+        # decodes and block ffmpeg forever; DEVNULL removes that failure mode.
+        stderr=asyncio.subprocess.DEVNULL,
     )
 
     buffer = bytearray()
     offset_ms = 0
+    timed_out = False
     # SOI / EOI byte sequences that delimit each JPEG in the MJPEG stream.
     SOI = b"\xff\xd8"
     EOI = b"\xff\xd9"
@@ -126,6 +129,7 @@ async def extract_frames_batch(
             try:
                 chunk = await asyncio.wait_for(proc.stdout.read(131_072), timeout=30)
             except asyncio.TimeoutError:
+                timed_out = True
                 logger.warning(
                     "ffmpeg batch read timed out at %d ms for %s", offset_ms, file_path
                 )
@@ -151,6 +155,13 @@ async def extract_frames_batch(
                 if offset_ms <= duration_ms:
                     yield offset_ms, frame
                     offset_ms += step_ms
+        if timed_out:
+            # A stalled extractor used to end "normally", so the caller marked a
+            # half-scanned title `done` with no error anywhere. Fail the scan
+            # instead: it stays visible and can be retried.
+            raise RuntimeError(
+                f"Frame extraction stalled at {offset_ms}ms for {file_path}"
+            )
     finally:
         if proc.returncode is None:
             proc.kill()

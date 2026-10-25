@@ -38,6 +38,9 @@ _PLEX_IMAGE_CACHE_MAX = 300
 # Disk-based poster cache: persists across server restarts and survives process memory limits.
 # Files live under CLEANPLEX_DATA (the /data volume in Docker) and refresh after 7 days.
 _POSTERS_DIR = DATA_DIR / "posters"
+# Hard caps for list/batch endpoints (see routes below).
+MAX_BATCH_GUIDS = 1000
+MAX_SEGMENTS_PAGE = 500
 _POSTER_DISK_TTL = 7 * 24 * 3600.0  # 7 days
 
 
@@ -144,29 +147,31 @@ async def sync_library(library_id: str):
             logger.info(f"Library {library_id} sync: removed {removed} stale titles")
 
         added = 0
-        for item in file_items:
-            if item.plex_guid in existing_guids:
-                continue
-            await db.upsert_scan_job(
-                plex_guid=item.plex_guid,
-                title=item.title,
-                file_path=item.file_path,
-                rating_key=item.rating_key,
-                library_id=item.library_id,
-                library_title=item.library_title,
-                content_rating=item.content_rating,
-                media_type=item.media_type,
-                year=item.year,
-                show_guid=item.show_guid,
-                show_rating_key=item.show_rating_key,
-                part_files=json.dumps(item.part_files),
-                duration_ms=item.duration_ms,
-                imdb_id=item.imdb_id,
-                tmdb_id=item.tmdb_id,
-                season=item.season,
-                episode=item.episode,
-            )
-            added += 1
+        new_items = [i for i in file_items if i.plex_guid not in existing_guids]
+        if new_items:
+            # One transaction for the whole batch — see upsert_scan_jobs_bulk.
+            added = await db.upsert_scan_jobs_bulk([
+                {
+                    "plex_guid": item.plex_guid,
+                    "title": item.title,
+                    "file_path": item.file_path,
+                    "rating_key": item.rating_key,
+                    "library_id": item.library_id,
+                    "library_title": item.library_title,
+                    "content_rating": item.content_rating,
+                    "media_type": item.media_type,
+                    "year": item.year,
+                    "show_guid": item.show_guid,
+                    "show_rating_key": item.show_rating_key,
+                    "part_files": json.dumps(item.part_files),
+                    "duration_ms": item.duration_ms,
+                    "imdb_id": item.imdb_id,
+                    "tmdb_id": item.tmdb_id,
+                    "season": item.season,
+                    "episode": item.episode,
+                }
+                for item in new_items
+            ])
 
         logger.info(f"Library {library_id} synced: {added} new titles added")
         return {"ok": True, "synced": len(items), "new": added, "removed": removed}
@@ -274,6 +279,11 @@ async def get_plex_image(path: str):
     """
     if not path:
         raise HTTPException(status_code=400, detail="Missing image path")
+    # Only Plex-relative media paths are proxied. Absolute URLs/userinfo tricks
+    # ("@attacker.com/x") would be fetched with the Plex token attached — see
+    # PlexClient.fetch_image, which enforces the same rule.
+    if not path.startswith("/") or "://" in path:
+        raise HTTPException(status_code=400, detail="Invalid image path")
 
     now = time.monotonic()
 
@@ -345,6 +355,13 @@ async def get_segments_batch(data: dict):
     guids: list[str] = data.get("guids", [])
     if not guids:
         return {"segments": []}
+    if not isinstance(guids, list) or len(guids) > MAX_BATCH_GUIDS:
+        # /api/titles/segments/batch takes an untyped body; bound it so one
+        # request cannot exceed SQLite's parameter limit (or memory) per call.
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_BATCH_GUIDS} guids per batch request.",
+        )
 
     global _scan_labels_cache
     now = time.monotonic()
@@ -579,5 +596,8 @@ async def delete_all_segments_for_title(plex_guid: str):
 
 @router.get("/segments")
 async def get_all_segments(limit: int = 100, offset: int = 0):
-    segments = await db.get_all_segments(limit=limit, offset=offset)
+    # Bound the page size: an unbounded ?limit= dumps the entire table (with full
+    # rows) in one response on an unauthenticated-by-default port.
+    limit = max(1, min(limit, MAX_SEGMENTS_PAGE))
+    segments = await db.get_all_segments(limit=limit, offset=max(0, offset))
     return {"segments": segments}

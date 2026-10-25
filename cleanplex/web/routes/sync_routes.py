@@ -304,7 +304,8 @@ async def test_file_hash(file_path: str = Body(...)):
     Useful for debugging file identification issues.
     """
     try:
-        file_hash = compute_file_hash(file_path)
+        # Arbitrary local paths: keep hashing off the event loop.
+        file_hash = await asyncio.to_thread(compute_file_hash, file_path)
         return {
             "file_path": file_path,
             "file_hash": file_hash,
