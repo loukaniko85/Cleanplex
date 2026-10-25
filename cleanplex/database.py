@@ -1055,9 +1055,11 @@ async def recover_stale_scanning_jobs() -> int:
     enqueue_pending (which only reads 'pending') would never retry it.
     """
     async with get_connection() as conn:
+        # scan_jobs has no updated_at column (see SCHEMA); only reset the fields
+        # that exist. This runs during startup, so a bad column here bricks boot.
         cursor = await conn.execute(
-            "UPDATE scan_jobs SET status='pending', progress=0, "
-            "updated_at=CURRENT_TIMESTAMP WHERE status='scanning'"
+            "UPDATE scan_jobs SET status='pending', progress=0, error_msg=NULL "
+            "WHERE status='scanning'"
         )
         await conn.commit()
         return cursor.rowcount

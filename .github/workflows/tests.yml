@@ -39,3 +39,37 @@ jobs:
         run: cd frontend && npx tsc --noEmit && npm test
       - name: Production build
         run: cd frontend && npm run build
+
+  container:
+    # v1.0.2 shipped an image that built fine but crashed on startup. Unit tests
+    # cannot catch that: build the image and boot it like a user would.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t cleanplex:ci .
+      - name: Boot container and wait for health
+        run: |
+          docker run -d --name cleanplex-ci -p 7979:7979 cleanplex:ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:7979/api/health; then
+              echo
+              echo "Container is healthy"
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' cleanplex-ci 2>/dev/null)" != "true" ]; then
+              echo "::error::Container exited before becoming healthy"
+              docker logs cleanplex-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "::error::Container did not become healthy within 120s"
+          docker logs cleanplex-ci
+          exit 1
+      - name: Container logs
+        if: always()
+        run: docker logs cleanplex-ci || true
+      - name: Stop container
+        if: always()
+        run: docker rm -f cleanplex-ci || true
