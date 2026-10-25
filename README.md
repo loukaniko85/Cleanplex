@@ -197,7 +197,10 @@ it without credentials. With the variables unset, behaviour is unchanged (no aut
 **Default behavior:** When a segment is detected (e.g., 30s–60s), Cleanplex automatically:
 1. **Widens the segment** by the Pre and Post Buffer settings → 27s–63s at the 3000ms defaults
 2. **Monitors with a lookahead** of one poll interval — the filter triggers before the widened start to absorb polling latency
-3. **Skips to 27s** and holds the block until playback reaches 63s
+3. **Skips to 63s** (the widened end) — past the flagged content entirely — and holds the block until playback reaches 63s
+
+Seeking to the *start* of a flagged span lands the viewer inside it; the target is always the
+widened end, so a skip never plays through the content it was meant to remove.
 
 Polling tightens automatically as a stream approaches a segment, so skips land accurately without
 polling Plex hard the rest of the time. Every skip is verified on the next tick: a client that
@@ -299,9 +302,17 @@ payload as multipart form data; no extra configuration is needed.
 
 Imported timings are authored against a specific cut of a film. Cleanplex checks them against the
 title's runtime and warns when they do not line up, since an extended edition will throw every
-timestamp out.
+timestamp out. Auto-fetch is stricter than manual import: a file whose span is far off the
+title's runtime (or a wrong-title match) is rejected rather than silently applied.
 
-Plex itself does not read `.edl` files, so EDL/MCF export is for Kodi, Jellyfin and mpv.
+Malformed cues are handled per cue, not per file: if a `.skp` file contains one inverted range,
+that cue is skipped with a log warning and the rest of the file is imported. EDL comments
+(`# text`), MCF files with a UTF-8 BOM, and blank lines between a cue and its label are all
+accepted.
+
+Plex itself does not read `.edl` files, so EDL/MCF export is for Kodi, Jellyfin and mpv. Those
+formats cannot express `blank`/`blur`/`fast`, so those segments are omitted from exports (and
+logged) rather than downgraded to hard cuts.
 
 ## Profanity Filtering
 
@@ -366,6 +377,7 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Detector labels** — Checkboxes to select which nudity types trigger skips (e.g., "female genitalia", "male genitalia", "breast", "butt", "anus")
 - **Skip behavior** — Pre/post buffers around segments, scan window, segment merge gap, minimum hits per segment
 - **Profanity wordlist** — Words the subtitle scanner mutes
+- **Local scanning coverage** — NudeNet titles scanned, titles with ML segments, and titles still missing local coverage, overall and per library
 - **VideoSkip coverage** — Title/segment counts overall and per library, plus the auto-fetch toggle, queue limits, live queue status, and pause/resume/retry/clear controls. The queue is off by default and processes one title at a time.
 
 ## Client Compatibility
