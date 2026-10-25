@@ -60,7 +60,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="px-4 py-4 border-t border-plex-border/70 flex items-center justify-between text-[11px] text-gray-600">
-          <span>v1.0.5</span>
+          <span>v1.0.6</span>
           <span className="flex items-center gap-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-green-500/80" />
             LAN

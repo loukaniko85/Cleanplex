@@ -26,6 +26,27 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 
+def _as_list(value) -> list:
+    """Normalize a plexapi attribute that may be a list, a method or None.
+
+    plexapi exposes some collections as properties on one version and as
+    zero-argument methods on another (for example ``MediaPart.audioStreams``).
+    Iterating a bound method raised ``'method' object is not iterable``, which
+    made healthy Plex sessions disappear from the dashboard.
+    """
+    if value is None:
+        return []
+    if callable(value):
+        try:
+            value = value()
+        except Exception:
+            return []
+    try:
+        return list(value)
+    except TypeError:
+        return []
+
+
 @dataclass
 class ActiveSession:
     session_key: str
@@ -193,8 +214,11 @@ class PlexClient:
                 else:
                     full_title = s.title
 
-                # Find the first player
-                player = s.players[0] if s.players else None
+                # Find the first player. plexapi exposes some of these as lists on
+                # one version and as methods on another; iterating a bound method
+                # raised "'method' object is not iterable" and dropped the session.
+                players = _as_list(getattr(s, "players", None))
+                player = players[0] if players else None
                 client_id = player.machineIdentifier if player else ""
                 client_title = player.title if player else "Unknown"
                 controllable = bool(player and player.state is not None) if player else False
@@ -214,12 +238,16 @@ class PlexClient:
                 # Resolve file path
                 file_path = ""
                 audio_language = ""
-                if s.media and s.media[0].parts:
-                    part = s.media[0].parts[0]
+                media = _as_list(getattr(s, "media", None))
+                parts = _as_list(getattr(media[0], "parts", None)) if media else []
+                if parts:
+                    part = parts[0]
                     file_path = part.file or ""
-                    # The selected stream is what the viewer actually hears; fall
-                    # back to the first audio stream when Plex marks none selected.
-                    streams = [st for st in (getattr(part, "audioStreams", None) or [])]
+                    # MediaPart.audioStreams is a method in plexapi; call it when
+                    # needed. The selected stream is what the viewer actually
+                    # hears; fall back to the first audio stream when Plex marks
+                    # none selected.
+                    streams = _as_list(getattr(part, "audioStreams", None))
                     selected = next((st for st in streams if getattr(st, "selected", False)), None)
                     chosen = selected or (streams[0] if streams else None)
                     if chosen is not None:
@@ -229,17 +257,20 @@ class PlexClient:
 
                 # GUID — prefer the first one that looks useful
                 guid = ""
-                if hasattr(s, "guids") and s.guids:
-                    guid = s.guids[0].id
+                guids = _as_list(getattr(s, "guids", None))
+                if guids:
+                    guid = guids[0].id
                 elif hasattr(s, "guid"):
                     guid = s.guid or ""
 
                 section_id = str(s.librarySectionID) if hasattr(s, "librarySectionID") else ""
 
+                usernames = _as_list(getattr(s, "usernames", None))
+
                 result.append(
                     ActiveSession(
                         session_key=str(s.sessionKey),
-                        user=s.usernames[0] if s.usernames else "Unknown",
+                        user=str(usernames[0]) if usernames else "Unknown",
                         title=s.title,
                         full_title=full_title,
                         plex_guid=guid,

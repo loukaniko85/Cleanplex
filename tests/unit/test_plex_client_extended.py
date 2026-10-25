@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -72,6 +73,82 @@ async def test_get_active_sessions_returns_empty_on_exception():
     with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=Exception("network error")):
         sessions = await c.get_active_sessions()
     assert sessions == []
+
+
+def _fake_session(**overrides):
+    """A Plex session whose collections are a mix of lists and methods."""
+    part = SimpleNamespace(
+        file="/movies/movie.mkv",
+        # plexapi exposes this as a method; iterating it used to raise.
+        audioStreams=lambda: [SimpleNamespace(selected=True, languageCode="eng")],
+    )
+    session = SimpleNamespace(
+        sessionKey="sess-1",
+        usernames=lambda: ["alice"],  # method form
+        title="Movie",
+        type="movie",
+        ratingKey="100",
+        viewOffset=60_000,
+        duration=7_200_000,
+        thumb="/library/metadata/100/thumb",
+        librarySectionID="1",
+        players=[SimpleNamespace(
+            machineIdentifier="client-1",
+            title="Plex Web",
+            state="playing",
+            address="192.168.1.10",
+            port=32500,
+            volume=70,
+        )],
+        media=[SimpleNamespace(parts=[part])],
+        guids=[SimpleNamespace(id="plex://movie/abc")],
+    )
+    for key, value in overrides.items():
+        setattr(session, key, value)
+    return session
+
+
+async def test_get_active_sessions_parses_method_valued_attributes():
+    """Regression: 'method' object is not iterable dropped every session."""
+    c = _make_client()
+    session = _fake_session()
+    srv = _mock_server()
+    srv.sessions = MagicMock(return_value=[session])
+
+    async def fake_to_thread(func, *args, **kwargs):
+        if func == c._get_server:
+            return srv
+        return srv.sessions()
+
+    with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
+        sessions = await c.get_active_sessions()
+
+    assert len(sessions) == 1
+    parsed = sessions[0]
+    assert parsed.user == "alice"
+    assert parsed.audio_language == "eng"
+    assert parsed.client_identifier == "client-1"
+    assert parsed.plex_guid == "plex://movie/abc"
+    assert c.last_session_error == ""
+
+
+async def test_get_active_sessions_tolerates_missing_players_and_media():
+    c = _make_client()
+    session = _fake_session(players=None, media=None, guids=[])
+    srv = _mock_server()
+    srv.sessions = MagicMock(return_value=[session])
+
+    async def fake_to_thread(func, *args, **kwargs):
+        if func == c._get_server:
+            return srv
+        return srv.sessions()
+
+    with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
+        sessions = await c.get_active_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].client_title == "Unknown"
+    assert sessions[0].audio_language == ""
 
 
 # ── seek ──────────────────────────────────────────────────────────────────────
