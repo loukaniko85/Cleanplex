@@ -655,7 +655,7 @@ export default function SettingsPage() {
           ))}
         </div>
 
-        {scanCoverage && scanCoverage.libraries.length > 0 && (
+        {scanCoverage?.libraries?.length ? (
           <div className="mb-4 overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="text-gray-500">
@@ -680,7 +680,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
-        )}
+        ) : null}
       </section>
 
       {/* VideoSkip Exchange coverage */}
@@ -711,7 +711,7 @@ export default function SettingsPage() {
           ))}
         </div>
 
-        {coverage && coverage.libraries.length > 0 && (
+        {coverage?.libraries?.length ? (
           <div className="mb-4 overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="text-gray-500">
@@ -736,7 +736,7 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
-        )}
+        ) : null}
 
         <div className="space-y-4 mb-4">
           <label className="flex items-start gap-3 cursor-pointer">
