@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from ...logger import get_logger
 from ... import database as db
 from ... import importers
-from ...importers._common import ParseError, runtime_warning
+from ...importers._common import CATEGORIES, ParseError, runtime_warning
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/segments", tags=["import"])
@@ -26,6 +26,10 @@ class PastePayload(BaseModel):
     plex_guid: str
     text: str = Field(..., max_length=MAX_PASTE_CHARS)
     replace: bool = False
+    # Optional override for lines whose description carries no recognised keyword
+    # (e.g. "Scar Missed Presentation of Simba"). Without it those cues land in
+    # `other`, which many households do not filter.
+    category: str | None = None
 
 
 async def _store(plex_guid: str, segments: list[dict], source: str, replace: bool) -> dict:
@@ -93,6 +97,20 @@ async def import_pasted_list(payload: PastePayload):
         segments = importers.parse(payload.text, "paste")
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if payload.category:
+        if payload.category not in CATEGORIES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown category {payload.category!r}.",
+            )
+        for seg in segments:
+            # Only fill the gaps: an explicit keyword in the line still wins.
+            if seg["category"] == "other":
+                seg["category"] = payload.category
+                if payload.category == "language":
+                    seg["action"] = "mute"
+                    seg["channel"] = "audio"
 
     return await _store(payload.plex_guid, segments, "paste", payload.replace)
 

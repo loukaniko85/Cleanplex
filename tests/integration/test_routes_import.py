@@ -157,6 +157,57 @@ async def test_paste_import_requires_plex_guid(http_client):
     assert resp.status_code == 422
 
 
+async def test_paste_import_category_override_fills_unrecognised_lines(http_client):
+    """A pasted scene list with plot descriptions needs a category hint."""
+    await _make_job()
+
+    resp = await http_client.post(
+        "/api/segments/import/paste",
+        json={
+            "plex_guid": "guid-import",
+            "text": (
+                "04:38 - 07:15 Scar Missed Presentation of Simba\n"
+                "11:25 - 13:14 hyenas in the elephant graveyard\n"
+            ),
+            "category": "violence",
+        },
+    )
+
+    assert resp.status_code == 200
+    stored = await db.get_segments_for_guid("guid-import")
+    assert {s["category"] for s in stored} == {"violence"}
+    assert all(s["severity"] == "high" for s in stored)
+
+
+async def test_paste_import_category_override_keeps_keyword_categories(http_client):
+    await _make_job()
+
+    resp = await http_client.post(
+        "/api/segments/import/paste",
+        json={
+            "plex_guid": "guid-import",
+            "text": "00:01 - 00:02 nudity\n00:03 - 00:04 plot description\n",
+            "category": "violence",
+        },
+    )
+
+    assert resp.status_code == 200
+    stored = await db.get_segments_for_guid("guid-import")
+    assert {s["category"] for s in stored} == {"nudity", "violence"}
+
+
+async def test_paste_import_rejects_unknown_category(http_client):
+    await _make_job()
+
+    resp = await http_client.post(
+        "/api/segments/import/paste",
+        json={"plex_guid": "guid-import", "text": "00:01 - 00:02 x", "category": "banana"},
+    )
+
+    assert resp.status_code == 422
+    assert "Unknown category" in resp.json()["detail"]
+
+
 # ── GET /api/segments/export/{plex_guid} ──────────────────────────────────────
 
 async def test_export_edl_renders_rows(http_client):

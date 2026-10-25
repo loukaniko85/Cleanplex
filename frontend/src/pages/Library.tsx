@@ -378,17 +378,22 @@ export default function Library() {
         <SkipFileImport
           plexGuid={guid}
           onImported={() => {
-            // Drop the cached list so the next expand refetches what was imported.
-            setLoadedSegments(prev => {
-              const next = { ...prev }
-              delete next[guid]
-              return next
-            })
-            setExpandedSegments(prev => {
-              const next = new Set(prev)
-              next.delete(guid)
-              return next
-            })
+            // Keep the panel open: collapsing it here hid the import result the
+            // user just asked for. Refresh the segment list in place instead.
+            void (async () => {
+              try {
+                const d = await api.get<{ segments: Segment[] }>(
+                  `/api/titles/${encodeURIComponent(guid)}/segments`,
+                )
+                setLoadedSegments(prev => ({ ...prev, [guid]: d.segments }))
+              } catch {
+                setLoadedSegments(prev => {
+                  const next = { ...prev }
+                  delete next[guid]
+                  return next
+                })
+              }
+            })()
           }}
         />
         {loadingSegments.has(guid) ? (

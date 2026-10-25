@@ -382,6 +382,37 @@ def test_paste_rejects_input_with_no_ranges():
         paste.parse("nothing useful here")
 
 
+def test_paste_does_not_treat_the_name_scar_as_fear():
+    """Lion King's Scar is a character, not a scary scene."""
+    segments = paste.parse("04:38 - 07:15 Scar Missed Presentation of Simba\n")
+
+    assert segments[0]["category"] == "other"
+
+
+def test_paste_still_treats_scary_wording_as_fear():
+    segments = paste.parse("10:00 - 10:30 scary jump scene\n")
+
+    assert segments[0]["category"] == "fear"
+
+
+def test_paste_parses_a_real_lion_king_timestamp_list():
+    text = (
+        "04:38 - 07:15 Scar Missed Presentation of Simba\n"
+        "11:25 - 13:14 Scar Chat with Samba\n"
+        "18:07 - 22:54 Simba in elephant graveyard and hyenas\n"
+        "25:31 - 40:56 Scar and Hyenas meeting + Stampede\n"
+        "48:17 - 50:04 Scar and Hyenas with Captured Zazu\n"
+        "54:04 - 55:12 Nana Chasing Pumba\n"
+        "1:10:05 - 1:21:00 Simba’s Challenge of Scar and Hyenas\n"
+    )
+    segments = paste.parse(text)
+
+    assert len(segments) == 7
+    assert (segments[0]["start_ms"], segments[0]["end_ms"]) == (278_000, 435_000)
+    assert (segments[-1]["start_ms"], segments[-1]["end_ms"]) == (4_205_000, 4_860_000)
+    assert all(seg["action"] == "skip" for seg in segments)
+
+
 # ── Dispatch and sidecar discovery (issue #67) ─────────────────────────────────
 
 def test_parse_file_dispatches_on_extension(tmp_path):

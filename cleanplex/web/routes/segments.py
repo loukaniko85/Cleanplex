@@ -100,18 +100,24 @@ def _plex_image_proxy_url(path: str) -> str:
 
 @router.get("/libraries")
 async def get_libraries():
-    """Return all Plex library sections."""
+    """Return Plex library sections, falling back to libraries known from the DB.
+
+    The fallback keeps the Library page usable (and skip-file imports possible)
+    when Plex is down or not configured; the seeded e2e environment depends on it
+    too.
+    """
     try:
         client = plex_mod.get_client()
         sections = await client.get_library_sections()
-        return {
-            "libraries": [
-                {"id": s.section_id, "title": s.title, "type": s.section_type}
-                for s in sections
-            ]
-        }
+        libraries = [
+            {"id": s.section_id, "title": s.title, "type": s.section_type}
+            for s in sections
+        ]
+        if libraries:
+            return {"libraries": libraries}
     except RuntimeError:
-        return {"libraries": [], "error": "Plex not configured"}
+        pass
+    return {"libraries": await db.get_library_summaries(), "source": "database"}
 
 
 @router.post("/libraries/{library_id}/sync")

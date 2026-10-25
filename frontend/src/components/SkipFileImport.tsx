@@ -48,6 +48,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
   const [result, setResult] = useState<ImportResult | null>(null)
   const [error, setError] = useState('')
   const [pasted, setPasted] = useState('')
+  const [pasteCategory, setPasteCategory] = useState('')
   const [replace, setReplace] = useState(false)
   const [vsLoading, setVsLoading] = useState(false)
   const [vsError, setVsError] = useState('')
@@ -118,13 +119,14 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
     setError('')
     setResult(null)
     try {
-      finish(
-        await api.post<ImportResult>('/api/segments/import/paste', {
-          plex_guid: plexGuid,
-          text: pasted,
-          replace,
-        }),
-      )
+      const payload: Record<string, unknown> = {
+        plex_guid: plexGuid,
+        text: pasted,
+        replace,
+      }
+      // Empty means "infer per line from the description".
+      if (pasteCategory) payload.category = pasteCategory
+      finish(await api.post<ImportResult>('/api/segments/import/paste', payload))
       setPasted('')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Import failed.')
@@ -211,10 +213,28 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
           <textarea
             value={pasted}
             onChange={e => setPasted(e.target.value)}
-            rows={5}
-            placeholder={'00:12:30 - 00:13:05 nudity\n1:02:11 to 1:02:20 violence'}
+            rows={6}
+            placeholder={'04:38 - 07:15 Scar Missed Presentation of Simba\n11:25 - 13:14 Scar Chat with Samba\n48:17 - 50:04 Scar and Hyenas with Captured Zazu'}
             className="w-full bg-plex-bg border border-plex-border rounded p-2 text-xs text-gray-200 font-mono"
           />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <label htmlFor="paste-category" className="text-[11px] text-gray-500">
+              Category for lines without a keyword
+            </label>
+            <select
+              id="paste-category"
+              value={pasteCategory}
+              onChange={e => setPasteCategory(e.target.value)}
+              className="bg-plex-bg border border-plex-border rounded px-2 py-1 text-xs text-gray-200"
+            >
+              <option value="">Auto (from description)</option>
+              {['violence', 'fear', 'sex', 'nudity', 'language', 'drugs', 'discrimination', 'other'].map(cat => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
+          </div>
           <button
             onClick={importPaste}
             disabled={busy || !pasted.trim()}

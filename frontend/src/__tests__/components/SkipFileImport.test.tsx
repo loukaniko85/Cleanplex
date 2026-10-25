@@ -92,6 +92,29 @@ describe('SkipFileImport', () => {
     expect(screen.getByText('Import list')).toBeDisabled()
   })
 
+  it('sends the chosen category for pasted lines without keywords', async () => {
+    mockApi.post.mockResolvedValue({ imported: 1, source: 'paste', title: 'Movie', warning: null })
+
+    render(<SkipFileImport plexGuid="guid-1" />)
+    fireEvent.click(screen.getByText('Paste list'))
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '04:38 - 07:15 Scar Missed Presentation of Simba' },
+    })
+    fireEvent.change(screen.getByLabelText('Category for lines without a keyword'), {
+      target: { value: 'violence' },
+    })
+    fireEvent.click(screen.getByText('Import list'))
+
+    await waitFor(() => {
+      expect(mockApi.post).toHaveBeenCalledWith('/api/segments/import/paste', {
+        plex_guid: 'guid-1',
+        text: '04:38 - 07:15 Scar Missed Presentation of Simba',
+        replace: false,
+        category: 'violence',
+      })
+    })
+  })
+
   it('passes the replace flag when asked to overwrite', async () => {
     mockApi.upload.mockResolvedValue({ imported: 1, source: 'edl', title: 'M', warning: null })
 

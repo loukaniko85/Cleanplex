@@ -1302,6 +1302,37 @@ async def get_videoskip_coverage() -> dict:
     return {**totals, "libraries": libraries}
 
 
+async def get_library_summaries() -> list[dict]:
+    """Return libraries known from scan_jobs, for when Plex is unreachable.
+
+    The Library page needs a library list to browse and import against; deriving
+    it from the database keeps imports possible while Plex is down or being
+    reconfigured instead of showing an empty page.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT library_id,
+                   COALESCE(NULLIF(library_title, ''), 'Unknown') AS library_title,
+                   MAX(CASE WHEN media_type = 'episode' THEN 1 ELSE 0 END) AS has_episodes,
+                   COUNT(*) AS total
+            FROM scan_jobs
+            WHERE COALESCE(library_id, '') != ''
+            GROUP BY library_id, library_title
+            ORDER BY library_title COLLATE NOCASE
+            """
+        )
+    return [
+        {
+            "id": row["library_id"],
+            "title": row["library_title"],
+            "type": "show" if int(row["has_episodes"] or 0) else "movie",
+            "total": int(row["total"] or 0),
+        }
+        for row in rows
+    ]
+
+
 async def get_scan_coverage() -> dict:
     """Return local-scan (NudeNet) coverage totals and a per-library breakdown.
 

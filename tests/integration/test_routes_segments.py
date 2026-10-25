@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -11,6 +11,29 @@ from tests.conftest import make_mock_plex_client
 
 
 pytestmark = pytest.mark.usefixtures("setup_db")
+
+
+# ── GET /api/libraries ────────────────────────────────────────────────────────
+
+async def test_get_libraries_falls_back_to_database_when_plex_is_offline(http_client):
+    await db.upsert_scan_job(
+        plex_guid="lib-fallback",
+        title="Movie",
+        file_path="/m.mkv",
+        rating_key="1",
+        library_id="7",
+        library_title="Fallback Movies",
+    )
+    mock_client = make_mock_plex_client()
+    mock_client.get_library_sections = AsyncMock(return_value=[])
+    with patch("cleanplex.web.routes.segments.plex_mod.get_client", return_value=mock_client):
+        resp = await http_client.get("/api/libraries")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "database"
+    assert body["libraries"][0]["title"] == "Fallback Movies"
+    assert body["libraries"][0]["type"] == "movie"
 
 
 # ── GET /api/titles/{plex_guid}/segments ──────────────────────────────────────
@@ -101,13 +124,13 @@ async def test_get_all_segments_pagination(http_client):
 
 # ── GET /api/libraries ─────────────────────────────────────────────────────────
 
-async def test_get_libraries_returns_error_when_plex_not_configured(http_client):
+async def test_get_libraries_falls_back_to_an_empty_database(http_client):
     with patch("cleanplex.web.routes.segments.plex_mod.get_client", side_effect=RuntimeError("not configured")):
         resp = await http_client.get("/api/libraries")
     assert resp.status_code == 200
     data = resp.json()
     assert data["libraries"] == []
-    assert "error" in data
+    assert data["source"] == "database"
 
 
 async def test_get_libraries_returns_sections(http_client):

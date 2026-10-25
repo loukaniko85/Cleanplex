@@ -31,7 +31,8 @@ _KEYWORDS = (
     (re.compile(r"viol|gore|blood|fight|kill", re.I), "violence"),
     (re.compile(r"lang|profan|curs|swear|f-word", re.I), "language"),
     (re.compile(r"drug|alcohol|smok|drink", re.I), "drugs"),
-    (re.compile(r"scar|fright|intens|jump", re.I), "fear"),
+    # "Scar" the Lion King character is not a scary scene; only the fear words.
+    (re.compile(r"\b(?:scar(?:y|ed|es|ing)|fright|intens|jump)\b", re.I), "fear"),
     (re.compile(r"commercial|advert", re.I), "commercial"),
 )
 
