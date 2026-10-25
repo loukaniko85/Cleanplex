@@ -180,6 +180,11 @@ class PlexClient:
         # How each client last accepted a player command. Populated by
         # load_client_profiles() at startup and updated whenever one is learned.
         self._client_profiles: dict[str, dict] = {}
+        # machineIdentifier → (monotonic_ts, controllable, error) from a remote-control
+        # probe. Plex's /clients registry only lists players that advertise over GDM;
+        # mobile apps often play without appearing there, so absence is probed rather
+        # than treated as "cannot be controlled".
+        self._control_probe_cache: dict[str, tuple[float, bool, str]] = {}
 
     def _get_server(self) -> PlexServer:
         if self._server is None:
@@ -254,34 +259,36 @@ class PlexClient:
                 player = players[0] if players else None
                 client_id = player.machineIdentifier if player else ""
                 client_title = player.title if player else "Unknown"
-                # A stateful player is not necessarily controllable: Plex Web plays
-                # in a browser and has no remote-control endpoint. Trust the
-                # Companion registry when it is available.
-                info = registry.get(client_id) if registry is not None else None
-                client_product = info.product if info else ""
-                capabilities = ",".join(info.capabilities) if info else ""
-                control_note = ""
-                if registry is not None and info is None:
-                    controllable = False
-                    control_note = (
-                        "This client does not accept remote commands (Plex Web and browser "
-                        "players cannot be controlled). Use a Plex app on a TV, phone or tablet."
-                    )
-                elif info is not None:
-                    controllable = info.controllable
-                    if not controllable:
-                        control_note = "This client does not advertise playback control."
-                else:
-                    controllable = bool(player and player.state is not None) if player else False
-                    control_note = (
-                        "Client capability lookup failed — skipping may not work on this client."
-                    )
                 client_address = getattr(player, "address", "") if player else ""
                 client_port_raw = getattr(player, "port", 32500) if player else 32500
                 try:
                     client_port = int(client_port_raw or 32500)
                 except Exception:
                     client_port = 32500
+
+                # Plex's /clients registry lists players that advertise over GDM.
+                # Mobile apps frequently play without appearing there, and Plex Web
+                # never does but does reject commands. Absence is therefore probed
+                # with a harmless command rather than assumed to be uncontrollable.
+                info = registry.get(client_id) if registry is not None else None
+                client_product = info.product if info else ""
+                capabilities = ",".join(info.capabilities) if info else ""
+                control_note = ""
+                if info is not None:
+                    controllable = info.controllable
+                    if not controllable:
+                        control_note = "This client does not advertise playback control."
+                else:
+                    controllable, probe_error = await self._probe_client_control(
+                        client_id, client_address, client_port
+                    )
+                    if not controllable:
+                        control_note = (
+                            "Cleanplex could not control this client"
+                            + (f" ({probe_error})" if probe_error else "")
+                            + ". Use a Plex app that accepts remote commands; if this is a "
+                            "Plex app, enable 'Advertise as player' in its settings."
+                        )
 
                 volume_raw = getattr(player, "volume", None) if player else None
                 try:
@@ -407,6 +414,47 @@ class PlexClient:
         if clients is None:
             return None
         return {client.machine_identifier: set(client.capabilities) for client in clients}
+
+    async def _probe_client_control(
+        self, client_identifier: str, address: str, port: int
+    ) -> tuple[bool, str]:
+        """Ask a client to accept a harmless player command, caching the answer.
+
+        Plex Web answers with 400; a Companion-capable app answers 200. This is the
+        only honest way to classify clients that never appear in /clients.
+        """
+        if not client_identifier:
+            return False, "the session did not expose a player identifier"
+
+        now = time.monotonic()
+        cached = self._control_probe_cache.get(client_identifier)
+        if cached and now - cached[0] < 300:
+            return cached[1], cached[2]
+
+        ping = f"/player/playback/ping?commandID={self._next_command_id()}"
+        controllable = await self._try_proxy(ping, client_identifier)
+        if not controllable and address:
+            for variant in range(len(self._direct_variants("http://x", client_identifier))):
+                if await self._try_direct(ping, client_identifier, address, port, variant):
+                    controllable = True
+                    break
+
+        error = "" if controllable else (self.last_control_error or "no response")
+        self._control_probe_cache[client_identifier] = (now, controllable, error[:200])
+        logger.info(
+            "Control probe for %s: %s%s",
+            client_identifier,
+            "ok" if controllable else "not controllable",
+            "" if controllable else f" ({error[:120]})",
+        )
+        return controllable, error
+
+    def _record_control_result(self, client_identifier: str, success: bool) -> None:
+        self._control_probe_cache[client_identifier] = (
+            time.monotonic(),
+            success,
+            "" if success else (self.last_control_error or "command rejected"),
+        )
 
     # ── Player commands ───────────────────────────────────────────────────────
 
@@ -582,6 +630,7 @@ class PlexClient:
             f"&commandID={self._next_command_id()}"
         )
         success = await self._send_command(path, client_identifier, client_address, client_port)
+        self._record_control_result(client_identifier, success)
         if success:
             logger.info("Seeked client %s to %dms", client_identifier, offset_ms)
         return success
@@ -594,6 +643,7 @@ class PlexClient:
             f"&commandID={self._next_command_id()}"
         )
         success = await self._send_command(path, client_identifier, client_address, client_port)
+        self._record_control_result(client_identifier, success)
         if success:
             logger.info("Set volume on client %s to %d", client_identifier, level)
         return success

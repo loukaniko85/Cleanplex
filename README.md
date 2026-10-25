@@ -489,9 +489,13 @@ Titles can be marked as **ignored** to skip them during background scans:
 
 **Segments are detected but nothing is skipped?**
 - Check the client. **Plex Web (a browser tab) cannot be controlled remotely** — it
-  accepts the API request and ignores it, so Cleanplex now labels it "Not controllable"
-  and explains why on the Dashboard. Play through a Plex app on a TV, phone or tablet
-  (Companion-capable) for skipping to work.
+  accepts the API request and ignores it. Cleanplex probes each active client with a
+  harmless command and marks it "Not controllable" (with the probe error) when it
+  refuses. Play through a Plex app on a TV, phone or tablet instead.
+- In the Plex app, enable **Settings → Advanced → Advertise as player** so the server
+  can send seek commands to it. Some mobile builds do not appear in Plex's client
+  registry until this is on; Cleanplex probes unknown clients directly, so the
+  Dashboard will say whether control works.
 - Settings → Plex diagnostics shows `last_control_error` when a command was attempted
   and rejected; the Dashboard's recent skip events record `success: 0` for those.
 

@@ -155,11 +155,48 @@ async def test_get_active_sessions_marks_browser_players_uncontrollable():
 
     with patch.object(
         c, "get_clients", new=AsyncMock(return_value=[])
+    ), patch.object(
+        c, "_probe_client_control", new=AsyncMock(return_value=(False, "HTTP 400 Bad Request"))
     ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
         sessions = await c.get_active_sessions()
 
     assert sessions[0].is_controllable is False
-    assert "Plex Web" in sessions[0].control_note
+    assert "could not control this client" in sessions[0].control_note
+    assert "HTTP 400" in sessions[0].control_note
+
+
+async def test_get_active_sessions_probes_clients_missing_from_registry():
+    """Mobile apps often play without appearing in /clients but accept commands."""
+    c = _make_client()
+    session = _fake_session()
+    srv = _mock_server()
+    srv.sessions = MagicMock(return_value=[session])
+
+    async def fake_to_thread(func, *args, **kwargs):
+        if func == c._get_server:
+            return srv
+        return srv.sessions()
+
+    with patch.object(
+        c, "get_clients", new=AsyncMock(return_value=[])
+    ), patch.object(
+        c, "_probe_client_control", new=AsyncMock(return_value=(True, ""))
+    ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
+        sessions = await c.get_active_sessions()
+
+    assert sessions[0].is_controllable is True
+    assert sessions[0].control_note == ""
+
+
+async def test_probe_client_control_caches_the_result():
+    c = _make_client()
+    with patch.object(c, "_try_proxy", new=AsyncMock(return_value=False)) as proxy:
+        first = await c._probe_client_control("phone-1", "", 32500)
+        second = await c._probe_client_control("phone-1", "", 32500)
+
+    assert first[0] is False
+    assert second[0] is False
+    assert proxy.await_count == 1  # second call served from cache
 
 
 async def test_get_active_sessions_falls_back_when_capability_registry_fails():
@@ -175,11 +212,13 @@ async def test_get_active_sessions_falls_back_when_capability_registry_fails():
 
     with patch.object(
         c, "get_clients", new=AsyncMock(return_value=None)
+    ), patch.object(
+        c, "_probe_client_control", new=AsyncMock(return_value=(True, ""))
     ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
         sessions = await c.get_active_sessions()
 
-    assert sessions[0].is_controllable is True  # old heuristic: player reports state
-    assert "lookup failed" in sessions[0].control_note
+    assert sessions[0].is_controllable is True
+    assert sessions[0].control_note == ""
 
 
 async def test_get_active_sessions_tolerates_missing_players_and_media():
@@ -195,6 +234,8 @@ async def test_get_active_sessions_tolerates_missing_players_and_media():
 
     with patch.object(
         c, "get_clients", new=AsyncMock(return_value=[])
+    ), patch.object(
+        c, "_probe_client_control", new=AsyncMock(return_value=(False, "no player"))
     ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
         sessions = await c.get_active_sessions()
 
