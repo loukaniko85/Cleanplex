@@ -127,7 +127,11 @@ async def extract_frames_batch(
     try:
         while True:
             try:
-                chunk = await asyncio.wait_for(proc.stdout.read(131_072), timeout=30)
+                # Four workers decoding 4K/x265 while running the 640m model can
+                # starve the decoder for tens of seconds; 30s produced false
+                # "stalled" failures on healthy files. A genuinely wedged ffmpeg
+                # still fails, just later.
+                chunk = await asyncio.wait_for(proc.stdout.read(131_072), timeout=120)
             except asyncio.TimeoutError:
                 timed_out = True
                 logger.warning(
