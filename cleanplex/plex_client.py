@@ -183,6 +183,8 @@ class PlexClient:
 
         self.last_session_error = ""
         result = []
+        parse_failures = 0
+        first_parse_error = ""
         for s in sessions:
             try:
                 # Determine full title
@@ -257,8 +259,16 @@ class PlexClient:
                     )
                 )
             except Exception as exc:
-                logger.debug("Error parsing session: %s", exc)
+                parse_failures += 1
+                if not first_parse_error:
+                    first_parse_error = str(exc)
+                logger.warning("Error parsing session: %s", exc)
 
+        if parse_failures and not result:
+            self.last_session_error = (
+                f"Plex reported {len(sessions)} session(s) but none could be parsed: "
+                f"{first_parse_error}"
+            )
         return result
 
     # ── Player commands ───────────────────────────────────────────────────────

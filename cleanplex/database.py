@@ -1923,6 +1923,12 @@ async def record_webhook_event(
             "VALUES(?,?,?,?,?)",
             (event, rating_key, title, result, detail[:500]),
         )
+        # Deliveries are diagnostic only; a public endpoint must not grow the DB
+        # without bound. Keep the newest 500 and drop the rest.
+        await conn.execute(
+            "DELETE FROM webhook_events WHERE id NOT IN "
+            "(SELECT id FROM webhook_events ORDER BY id DESC LIMIT 500)"
+        )
         await conn.commit()
 
 

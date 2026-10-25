@@ -261,6 +261,9 @@ ML-scanned**, so this is by far the cheapest way to fill your library.
 | MovieContentFilter | `.mcf` | Spec 1.1.0, ~130 hierarchical categories. Also exported |
 | Pasted list | `.txt` | Loose `00:12:30 - 00:13:05 nudity` lines, for lists that have no machine format |
 
+EDL has no category or severity fields. Imports are therefore treated as high-severity
+`skip` cuts, and `blank`/`blur` actions cannot be represented by the format.
+
 Three ways in:
 
 - **Sidecar** — drop `movie.skp` (or `.edl` / `.mcf`) next to `movie.mkv`. It is imported when the
@@ -316,8 +319,10 @@ http://your-server:7979/api/webhooks/plex
 ```
 
 Only `library.new` triggers work, and only while auto-fetch is enabled. If you set
-`CLEANPLEX_WEBHOOK_TOKEN`, include it as `?token=...` in the URL. Plex sends the
-payload as multipart form data; no extra configuration is needed.
+`CLEANPLEX_WEBHOOK_TOKEN`, include it as `?token=...` in the URL. When HTTP Basic auth
+is enabled, the token is **mandatory** — the receiver returns 503 rather than exposing an
+unauthenticated write path. Plex sends the payload as multipart form data; no extra
+configuration is needed.
 
 **Verifying it:**
 
@@ -465,9 +470,11 @@ Titles can be marked as **ignored** to skip them during background scans:
 | `CLEANPLEX_PORT` | `7979` | Web UI port |
 | `CLEANPLEX_HOST` | `0.0.0.0` | Bind address |
 | `CLEANPLEX_VIDEOSKIP_URL` | `https://videoskip.herokuapp.com/exchange` | Exchange base URL; override for a mirror. `videoskip.org` currently loses deep links on redirect, so the application host is used directly |
+| `CLEANPLEX_WHENJUMPSCARE_URL` | `https://www.whenjumpscare.com` | WhenJumpScare base URL; override for a proxy |
 | `CLEANPLEX_AUTH_USER` | unset | Enables HTTP Basic auth for the UI/API when set with `CLEANPLEX_AUTH_PASS` |
 | `CLEANPLEX_AUTH_PASS` | unset | Password for the optional Basic auth gate |
-| `CLEANPLEX_WEBHOOK_TOKEN` | unset | Optional shared secret for `/api/webhooks/plex?token=...` |
+| `CLEANPLEX_WEBHOOK_TOKEN` | unset | Shared secret for `/api/webhooks/plex?token=...`. **Required when Basic auth is enabled** |
+| `CLEANPLEX_CORS_ORIGINS` | unset | Comma-separated browser origins allowed to call the API. Unset means same-origin only |
 
 ## Troubleshooting
 

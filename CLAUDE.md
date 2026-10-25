@@ -44,7 +44,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `videoskip.py` | VideoSkip Exchange lookup: HTML parsing, title matching, and on-demand `.skp` download. Never stores or mirrors the catalogue |
 | `videoskip_service.py` | Shared VideoSkip import path used by routes and the queue: match args, download+parse, store, runtime warning |
 | `videoskip_queue.py` | Persistent auto-fetch queue: sweep, single worker, pacing, daily ceiling, retries |
-| `whenjumpscare.py` | WhenJumpScare lookup: TMDB id → JSON-LD jumpscare timestamps. On demand only; never mirrors the catalogue |
+| `whenjumpscare.py` | WhenJumpScare lookup: TMDB id → JSON-LD jumpscare timestamps, exact-host validation. On demand only; never mirrors the catalogue |
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |
 | `filter_engine.py` | Playback position checks and seek decisions |
 | `watcher.py` | Polling loops only — no business logic |

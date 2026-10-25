@@ -183,6 +183,30 @@ async def test_fetch_image_empty_path_returns_empty(client):
     assert ct == ""
 
 
+async def test_unparseable_sessions_surface_an_error_instead_of_an_empty_list():
+    class BadSession:
+        @property
+        def title(self):
+            raise RuntimeError("bad session payload")
+
+    class FakeServer:
+        def sessions(self):
+            return [BadSession()]
+
+    c = PlexClient("http://plex:32400", "t")
+    c._get_server = lambda: FakeServer()
+
+    sessions = await c.get_active_sessions()
+
+    assert sessions == []
+    assert "none could be parsed" in c.last_session_error
+
+
+async def test_fetch_image_rejects_absolute_and_protocol_relative_paths(client):
+    assert await client.fetch_image("http://evil.example/x") == (b"", "")
+    assert await client.fetch_image("//evil.example/x") == (b"", "")
+
+
 async def test_fetch_image_404_returns_empty():
     transport = httpx.MockTransport(lambda req: httpx.Response(404))
     c = PlexClient("http://plex:32400", "t")
