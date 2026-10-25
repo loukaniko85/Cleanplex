@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import json
+
 from ...logger import get_logger
 from ... import database as db
 import cleanplex.plex_client as plex_mod
@@ -148,6 +150,31 @@ def _require_time_setting(value: str | None, name: str) -> None:
     raise HTTPException(status_code=422, detail=f"{name} must be HH:MM (00:00–23:59)")
 
 
+def _require_json_list_setting(value: str | None, name: str) -> None:
+    """Reject malformed JSON-array settings before they are persisted.
+
+    These values are parsed by the scanner, watcher and eligibility checks; an
+    invalid array used to crash the pool at startup and keep it dead on restart.
+    """
+    if value is None:
+        return
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"{name} must be a JSON array.")
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=422, detail=f"{name} must be a JSON array.")
+
+
+_LIST_SETTINGS = (
+    "excluded_library_ids",
+    "scan_ratings",
+    "scan_labels",
+    "videoskip_auto_libraries",
+    "profanity_wordlist",
+)
+
+
 @router.put("")
 async def update_settings(payload: SettingsPayload):
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
@@ -158,6 +185,8 @@ async def update_settings(payload: SettingsPayload):
 
     _require_time_setting(data.get("scan_window_start"), "scan_window_start")
     _require_time_setting(data.get("scan_window_end"), "scan_window_end")
+    for key in _LIST_SETTINGS:
+        _require_json_list_setting(data.get(key), key)
     
     # Check if scan_workers is being changed
     scan_workers_changed = False
@@ -166,8 +195,25 @@ async def update_settings(payload: SettingsPayload):
         if data["scan_workers"] != current_workers:
             scan_workers_changed = True
             logger.info("Scan workers changing from %s to %s", current_workers, data["scan_workers"])
-    
+
+    old_auto = await db.get_setting("videoskip_auto_fetch", "0")
+    old_auto_libraries = await db.get_setting("videoskip_auto_libraries", "[]")
+
     await db.update_settings(data)
+
+    auto_turned_on = data.get("videoskip_auto_fetch") == "1" and old_auto != "1"
+    libraries_changed = (
+        "videoskip_auto_libraries" in data
+        and data["videoskip_auto_libraries"] != old_auto_libraries
+    )
+    if auto_turned_on:
+        requeued = await db.requeue_videoskip_skipped()
+        if requeued:
+            logger.info("Requeued %d VideoSkip row(s) after enabling auto-fetch", requeued)
+    elif libraries_changed:
+        requeued = await db.requeue_videoskip_skipped("Library is excluded from auto-fetch")
+        if requeued:
+            logger.info("Requeued %d VideoSkip row(s) after library policy change", requeued)
 
     # Invalidate scan_labels cache so the next segment expand reflects the new value.
     if "scan_labels" in data:
@@ -225,7 +271,10 @@ async def validate_model_path(payload: ValidateModelPathPayload):
         # Scanner auto-downloads 640m model into app storage on first use.
         from ... import scanner as scanner_mod
 
-        path = scanner_mod._ensure_local_640m_model()
+        # Hold the shared download lock and keep the blocking download off the
+        # event loop; calling the sync helper here froze skips/session polling and
+        # could race a concurrent scan's download into a corrupt model file.
+        path = await scanner_mod._ensure_640m_model_async()
         if not path:
             return {
                 "ok": False,

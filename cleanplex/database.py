@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +170,11 @@ CREATE TABLE IF NOT EXISTS videoskip_queue (
     updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_videoskip_queue_status ON videoskip_queue(status, created_at);
+
+CREATE TABLE IF NOT EXISTS videoskip_usage (
+    day  TEXT PRIMARY KEY,
+    used INTEGER DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS webhook_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -645,6 +651,84 @@ async def delete_segments_for_guid(plex_guid: str) -> int:
         cursor = await conn.execute("DELETE FROM segments WHERE plex_guid=?", (plex_guid,))
         await conn.commit()
         return cursor.rowcount
+
+
+async def delete_scanner_segments_for_guid(plex_guid: str) -> int:
+    """Delete only NudeNet-produced segments for a title.
+
+    A rescan must never destroy imported or hand-edited data it cannot recreate.
+    Rows merged with another source (sources lists more than `scanner`) are kept
+    because they still carry that other source's coverage.
+    """
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM segments WHERE plex_guid=? AND source='scanner' "
+            "AND (sources IS NULL OR sources IN ('', 'scanner'))",
+            (plex_guid,),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
+async def delete_segments_by_source_prefix(plex_guid: str, prefix: str) -> int:
+    """Remove one source's contribution without losing merged coverage.
+
+    Pure rows for the source are deleted. A row merged with other sources keeps
+    its interval but drops the prefix from `sources` and picks a remaining
+    primary source; deleting the whole row would silently remove another
+    provider's (or the scanner's) coverage.
+    """
+    removed = 0
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT * FROM segments WHERE plex_guid=? AND "
+            "(source LIKE ? OR sources LIKE ?)",
+            (plex_guid, f"{prefix}%", f"%{prefix}%"),
+        )
+        for row in rows:
+            item = dict(row)
+            all_sources = [
+                s.strip()
+                for s in (item.get("sources") or item.get("source") or "").split(",")
+                if s.strip()
+            ]
+            remaining = [s for s in all_sources if not s.startswith(prefix)]
+            if not remaining:
+                await conn.execute("DELETE FROM segments WHERE id=?", (item["id"],))
+                removed += 1
+                continue
+
+            primary = item.get("source") or ""
+            if primary.startswith(prefix) or primary not in remaining:
+                primary = max(
+                    remaining, key=lambda source: (_source_rank(source), source)
+                )
+            await conn.execute(
+                "UPDATE segments SET source=?, sources=? WHERE id=?",
+                (primary, ",".join(dict.fromkeys(remaining)), item["id"]),
+            )
+        await conn.commit()
+    return removed
+
+
+async def get_list_setting(key: str, default: list[str] | None = None) -> list[str]:
+    """Read a JSON-list setting without letting bad data crash the caller.
+
+    Scan/reorder paths used raw json.loads(); one malformed PUT then prevented
+    the scanner pool from starting on every restart.
+    """
+    raw = await get_setting(key, "")
+    if not raw:
+        return list(default or [])
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("Setting %s is not valid JSON; using the default", key)
+        return list(default or [])
+    if not isinstance(parsed, list):
+        logger.warning("Setting %s is not a JSON list; using the default", key)
+        return list(default or [])
+    return [str(value) for value in parsed]
 
 
 async def get_all_segments(limit: int = 200, offset: int = 0) -> list[dict]:
@@ -1257,8 +1341,8 @@ async def get_videoskip_coverage() -> dict:
         rows = await conn.execute_fetchall(
             """
             SELECT
-                COALESCE(j.library_id, '') AS library_id,
-                COALESCE(NULLIF(j.library_title, ''), 'Unknown') AS library_title,
+                j.library_id AS library_id,
+                COALESCE(NULLIF(MAX(j.library_title), ''), 'Unknown') AS library_title,
                 COUNT(*) AS total,
                 SUM(CASE WHEN EXISTS (
                     SELECT 1 FROM segments s WHERE s.plex_guid = j.plex_guid
@@ -1270,7 +1354,7 @@ async def get_videoskip_coverage() -> dict:
                 ) THEN 1 ELSE 0 END) AS with_videoskip
             FROM scan_jobs j
             WHERE COALESCE(j.ignored, 0) = 0
-            GROUP BY j.library_id, j.library_title
+            GROUP BY j.library_id
             ORDER BY library_title COLLATE NOCASE
             """
         )
@@ -1313,12 +1397,12 @@ async def get_library_summaries() -> list[dict]:
         rows = await conn.execute_fetchall(
             """
             SELECT library_id,
-                   COALESCE(NULLIF(library_title, ''), 'Unknown') AS library_title,
+                   COALESCE(NULLIF(MAX(library_title), ''), 'Unknown') AS library_title,
                    MAX(CASE WHEN media_type = 'episode' THEN 1 ELSE 0 END) AS has_episodes,
                    COUNT(*) AS total
             FROM scan_jobs
             WHERE COALESCE(library_id, '') != ''
-            GROUP BY library_id, library_title
+            GROUP BY library_id
             ORDER BY library_title COLLATE NOCASE
             """
         )
@@ -1349,8 +1433,8 @@ async def get_scan_coverage() -> dict:
         rows = await conn.execute_fetchall(
             """
             SELECT
-                COALESCE(j.library_id, '') AS library_id,
-                COALESCE(NULLIF(j.library_title, ''), 'Unknown') AS library_title,
+                j.library_id AS library_id,
+                COALESCE(NULLIF(MAX(j.library_title), ''), 'Unknown') AS library_title,
                 COUNT(*) AS total,
                 SUM(CASE WHEN j.status = 'done' THEN 1 ELSE 0 END) AS scanned,
                 SUM(CASE WHEN j.status = 'pending' THEN 1 ELSE 0 END) AS pending,
@@ -1366,7 +1450,7 @@ async def get_scan_coverage() -> dict:
                 ) THEN 1 ELSE 0 END) AS with_nudenet
             FROM scan_jobs j
             WHERE COALESCE(j.ignored, 0) = 0
-            GROUP BY j.library_id, j.library_title
+            GROUP BY j.library_id
             ORDER BY library_title COLLATE NOCASE
             """
         )
@@ -1433,6 +1517,7 @@ async def get_nudenet_analytics() -> dict:
             """
             SELECT s.labels, s.confidence, s.start_ms, s.end_ms
             FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
             WHERE (s.source = 'scanner' OR s.sources LIKE '%scanner%')
               AND s.labels IS NOT NULL AND s.labels != ''
             """
@@ -1670,6 +1755,60 @@ async def finish_videoskip_job(
         await conn.commit()
 
 
+def _usage_day() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+async def reserve_videoskip_attempts(count: int, limit: int) -> int:
+    """Reserve up to `count` Exchange attempts under a daily ceiling.
+
+    A limit <= 0 means unlimited. Returns the number actually granted. The
+    reservation is atomic so a manual bulk fetch and the queue cannot both spend
+    the last slot.
+    """
+    if count <= 0:
+        return 0
+    if limit <= 0:
+        return count
+
+    day = _usage_day()
+    async with get_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        row = await (await conn.execute(
+            "SELECT used FROM videoskip_usage WHERE day=?", (day,)
+        )).fetchone()
+        used = int(row[0]) if row else 0
+        granted = min(count, max(0, limit - used))
+        if granted:
+            await conn.execute(
+                "INSERT INTO videoskip_usage(day, used) VALUES(?, ?) "
+                "ON CONFLICT(day) DO UPDATE SET used=used+excluded.used",
+                (day, granted),
+            )
+        await conn.commit()
+    return granted
+
+
+async def get_videoskip_daily_used() -> int:
+    """Return today's reserved Exchange attempts (UTC day)."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT used FROM videoskip_usage WHERE day=?", (_usage_day(),)
+        )).fetchone()
+        return int(row[0]) if row else 0
+
+
+async def requeue_videoskip_job(queue_id: int) -> None:
+    """Return a claimed job to the queue without consuming an attempt."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "UPDATE videoskip_queue SET status='queued', "
+            "attempts=MAX(0, attempts-1), updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (queue_id,),
+        )
+        await conn.commit()
+
+
 async def get_videoskip_queue_status() -> dict:
     """Return queue counts, daily usage, current job and recent history."""
     async with get_connection() as conn:
@@ -1679,9 +1818,7 @@ async def get_videoskip_queue_status() -> dict:
         counts = {row["status"]: int(row["cnt"]) for row in rows}
 
         daily = await (await conn.execute(
-            "SELECT COUNT(*) FROM videoskip_queue "
-            "WHERE status IN ('done','no_match','failed') "
-            "AND updated_at >= datetime('now','-1 day')"
+            "SELECT used FROM videoskip_usage WHERE day=?", (_usage_day(),)
         )).fetchone()
 
         current = await (await conn.execute(
@@ -1717,6 +1854,27 @@ async def get_videoskip_queue_status() -> dict:
         "current": dict(current) if current else None,
         "recent": [dict(row) for row in recent_rows],
     }
+
+
+async def requeue_videoskip_skipped(reason_prefix: str | None = None) -> int:
+    """Requeue terminal `skipped` rows after a policy or ignore change.
+
+    `skipped` is normally terminal so a sweep does not retry an ignored title
+    forever. When the user un-ignores it or re-enables its library, those rows
+    need a way back in.
+    """
+    sql = (
+        "UPDATE videoskip_queue SET status='queued', attempts=0, last_error='', "
+        "updated_at=CURRENT_TIMESTAMP WHERE status='skipped'"
+    )
+    params: list = []
+    if reason_prefix:
+        sql += " AND last_error LIKE ?"
+        params.append(f"{reason_prefix}%")
+    async with get_connection() as conn:
+        cursor = await conn.execute(sql, params)
+        await conn.commit()
+        return cursor.rowcount
 
 
 async def clear_videoskip_queue() -> int:

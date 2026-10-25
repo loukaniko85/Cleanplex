@@ -151,6 +151,21 @@ async def test_toggle_ignored_returns_404_for_missing(http_client):
     assert resp.status_code == 404
 
 
+async def test_unignoring_requeues_a_skipped_videoskip_lookup(http_client):
+    await db.set_setting("videoskip_auto_fetch", "1")
+    await _make_job("ig-vs")
+    await db.set_ignored("ig-vs", True)
+    await db.enqueue_videoskip_job("ig-vs", "Movie")
+    claimed = await db.claim_next_videoskip_job()
+    await db.finish_videoskip_job(claimed["id"], "skipped", error="Title is gone or ignored")
+
+    resp = await http_client.post("/api/scan/title/ig-vs/ignore", json={"ignored": False})
+
+    assert resp.status_code == 200
+    status = await db.get_videoskip_queue_status()
+    assert status["queued"] == 1
+
+
 # ── POST /api/scan/restart-scanner ───────────────────────────────────────────
 
 async def test_restart_scanner_calls_request_scanner_restart(http_client):

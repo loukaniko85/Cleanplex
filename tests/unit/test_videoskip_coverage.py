@@ -214,3 +214,38 @@ async def test_reset_failed_scan_jobs_requeues_only_failures(setup_db):
     assert (await db.get_scan_job_by_guid("bad"))["status"] == "pending"
     assert (await db.get_scan_job_by_guid("bad"))["error_msg"] in (None, "")
     assert (await db.get_scan_job_by_guid("ok"))["status"] == "done"
+
+
+async def test_scan_coverage_merges_a_renamed_library(setup_db):
+    """A renamed Plex library must not appear as two rows with the same id."""
+    await _job("old-name")
+    await db.upsert_scan_job(
+        plex_guid="new-name",
+        title="new-name",
+        file_path="/media/new-name.mkv",
+        rating_key="2",
+        library_id="1",
+        library_title="Renamed",
+    )
+
+    coverage = await db.get_scan_coverage()
+
+    assert len([lib for lib in coverage["libraries"] if lib["library_id"] == "1"]) == 1
+
+
+async def test_rescan_preserves_imported_and_merged_segments(setup_db):
+    """A scanner re-run clears only scanner-only rows, never human data."""
+    await _job("mixed")
+    await db.insert_segment(plex_guid="mixed", title="mixed", start_ms=0, end_ms=1000)
+    await db.insert_segments_bulk(
+        "mixed",
+        "mixed",
+        [{"start_ms": 5000, "end_ms": 6000, "category": "violence"}],
+        "videoskip:776",
+    )
+
+    removed = await db.delete_scanner_segments_for_guid("mixed")
+
+    assert removed == 1
+    remaining = await db.get_segments_for_guid("mixed")
+    assert [s["source"] for s in remaining] == ["videoskip:776"]

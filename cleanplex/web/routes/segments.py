@@ -123,7 +123,7 @@ async def get_libraries():
 @router.post("/libraries/{library_id}/sync")
 async def sync_library(library_id: str):
     """Sync a library from Plex into DB. Returns count of new titles added."""
-    excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
+    excluded = set(await db.get_list_setting("excluded_library_ids", []))
     if library_id in excluded:
         return {"ok": False, "error": "Library is excluded from scanning"}
     try:

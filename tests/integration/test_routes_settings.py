@@ -68,6 +68,24 @@ async def test_update_settings_triggers_scanner_restart_on_worker_change(http_cl
     mock_restart.assert_awaited_once()
 
 
+async def test_library_policy_change_requeues_excluded_videoskip_rows(http_client):
+    await db.set_setting("videoskip_auto_fetch", "1")
+    await db.set_setting("videoskip_auto_libraries", "[]")
+    await db.upsert_scan_job("policy-title", "Movie", "/media/m.mkv", "1", "2", "Movies")
+    await db.enqueue_videoskip_job("policy-title", "Movie")
+    claimed = await db.claim_next_videoskip_job()
+    await db.finish_videoskip_job(
+        claimed["id"], "skipped", error="Library is excluded from auto-fetch"
+    )
+
+    resp = await http_client.put(
+        "/api/settings", json={"videoskip_auto_libraries": '["2"]'}
+    )
+
+    assert resp.status_code == 200
+    assert (await db.get_videoskip_queue_status())["queued"] == 1
+
+
 # ── POST /api/settings/test-connection ────────────────────────────────────────
 
 async def test_test_connection_requires_url_and_token(http_client):
@@ -122,6 +140,17 @@ async def test_update_settings_rejects_a_malformed_scan_window(http_client):
 
     assert resp.status_code == 422
     assert "HH:MM" in resp.json()["detail"]
+
+
+async def test_update_settings_rejects_malformed_json_lists(http_client):
+    """A bad array used to crash the scanner pool on every restart."""
+    with patch("cleanplex.web.routes.settings.scan_mod.request_scanner_restart", new=AsyncMock()):
+        resp = await http_client.put(
+            "/api/settings", json={"scan_labels": "not json"}
+        )
+
+    assert resp.status_code == 422
+    assert "JSON array" in resp.json()["detail"]
 
 
 # ── GET /api/settings/detector-labels ─────────────────────────────────────────

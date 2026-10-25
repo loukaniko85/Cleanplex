@@ -23,8 +23,10 @@ async def test_health_stays_public_while_api_requires_auth(monkeypatch, setup_db
     ) as client:
         assert (await client.get("/api/health")).status_code == 200
         assert (await client.get("/api/settings")).status_code == 401
-        # Plex cannot send Basic auth; the webhook is gated by its own token.
-        assert (await client.post("/api/webhooks/plex", data={})).status_code == 400
+        # Plex cannot send Basic auth. With auth enabled and no webhook token the
+        # receiver refuses (503) rather than silently opening an unauthenticated
+        # endpoint; set CLEANPLEX_WEBHOOK_TOKEN to use it.
+        assert (await client.post("/api/webhooks/plex", data={})).status_code == 503
 
         ok = await client.get(
             "/api/settings", headers={"Authorization": _basic("alice", "secret")}

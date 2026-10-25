@@ -44,8 +44,13 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
             # would otherwise suppress skips for unrelated playback.
             await filter_engine.reap({s.session_key for s in sessions}, client)
 
+            # One filter lookup per tick, not one per session. The list is tiny
+            # (Plex accounts, not sessions) and this runs every poll interval.
+            all_filters = {
+                f["plex_username"]: f for f in await db.get_all_user_filters()
+            }
             for session in sessions:
-                user_filter = await db.get_user_filter(session.user)
+                user_filter = all_filters.get(session.user)
                 # Default: filter enabled if no explicit record
                 if user_filter is None or user_filter["enabled"]:
                     await filter_engine.process(
@@ -146,8 +151,8 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
         try:
             client = get_client_fn()
             sections = await client.get_library_sections()
-            excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
-            scan_ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
+            excluded = set(await db.get_list_setting("excluded_library_ids", []))
+            scan_ratings = set(await db.get_list_setting("scan_ratings", []))
 
             for section in sections:
                 if section.section_id in excluded:

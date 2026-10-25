@@ -205,8 +205,8 @@ async def enqueue_pending() -> None:
         _queued_normal_ordered.clear()
 
     import json as _json
-    excluded_library_ids = set(_json.loads(await db.get_setting("excluded_library_ids", "[]")))
-    scan_ratings_set = set(_json.loads(await db.get_setting("scan_ratings", "[]")))
+    excluded_library_ids = set(await db.get_list_setting("excluded_library_ids", []))
+    scan_ratings_set = set(await db.get_list_setting("scan_ratings", []))
 
     jobs = await db.get_scan_jobs(status="pending")
     active = [j for j in jobs if is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
@@ -466,7 +466,7 @@ async def scan_video(plex_guid: str, config) -> None:
     if not is_force_scan:
         # Check if the title's library is excluded from scanning.
         import json as _json
-        excluded_library_ids = set(_json.loads(await db.get_setting("excluded_library_ids", "[]")))
+        excluded_library_ids = set(await db.get_list_setting("excluded_library_ids", []))
         if job.get("library_id") in excluded_library_ids:
             logger.info(
                 "Skipping %s: library '%s' is excluded from scanning",
@@ -524,12 +524,15 @@ async def scan_video(plex_guid: str, config) -> None:
 
     async with _state_lock:
         _current_guids.add(plex_guid)
-    # Fresh scan run: clear prior segments so retries/re-scans do not duplicate entries.
-    deleted = await db.delete_segments_for_guid(plex_guid)
+    # Fresh scan run: clear only NudeNet rows. Imported/human segments cannot be
+    # recreated by the scanner, so a rescan must never delete them; merged rows
+    # carry other sources and are kept for the same reason.
+    deleted = await db.delete_scanner_segments_for_guid(plex_guid)
     if deleted:
-        logger.info("Cleared %d previous segment(s) for %s", deleted, title)
+        logger.info("Cleared %d previous scanner segment(s) for %s", deleted, title)
     await db.update_scan_job_status(plex_guid, "scanning", progress=0.0)
     logger.info("Scanning: %s (%d part(s))", title, len(all_parts))
+    requeue_pending = False
 
     try:
         # Smaller interval improves recall for short scenes; configurable in settings.
@@ -636,16 +639,17 @@ async def scan_video(plex_guid: str, config) -> None:
                     return
 
                 if _paused:
-                    # Re-queue for later
+                    # Re-queue for later. enqueue() is a no-op while the guid is
+                    # still in _current_guids, so defer it to the finally block.
                     await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                    await enqueue(plex_guid)
+                    requeue_pending = True
                     logger.info("Scan paused mid-way through %s, re-queued", title)
                     return
 
                 # Periodically check the scan window; abort if it has ended.
                 if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
                     await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                    await enqueue(plex_guid)
+                    requeue_pending = True
                     logger.info("Scan window ended during scan of '%s', re-queued", title)
                     if not _paused:
                         pause_scanner()
@@ -726,6 +730,10 @@ async def scan_video(plex_guid: str, config) -> None:
     finally:
         async with _state_lock:
             _current_guids.discard(plex_guid)
+        # Requeue only after the guid left _current_guids, otherwise enqueue()
+        # returns early and the title is silently stranded as pending.
+        if requeue_pending:
+            await enqueue(plex_guid)
 
 
 async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
@@ -808,10 +816,11 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
         )
         await scan_video(plex_guid, config)
         
-        # Clear force_scan flag after job completes
-        if is_force_scan:
-            await db.set_force_scan(plex_guid, False)
-            logger.info(f"Cleared force_scan for {plex_guid}")
+        # Always clear force_scan. A force request that arrives while the title is
+        # already scanning is satisfied by that scan; clearing only when the flag
+        # was set at pick-up left force_scan=1 behind, permanently bypassing the
+        # window/rating/ignore gates for that title.
+        await db.set_force_scan(plex_guid, False)
 
         await asyncio.sleep(1)  # Brief pause between scans
 
@@ -857,16 +866,17 @@ async def scanner_loop(get_config_fn) -> None:
                     logger.warning("Worker task completed unexpectedly, restarting pool")
                     break
 
-            # Restart requested or worker failed; cancel all tasks
+            # Restart requested or worker failed; cancel all tasks.
             logger.info("Shutting down worker pool for restart")
             for task in worker_tasks:
                 if not task.done():
                     task.cancel()
-            # Wait for all tasks to complete/cancel
-            try:
-                await asyncio.gather(*worker_tasks)
-            except asyncio.CancelledError:
-                pass
+            # return_exceptions: a worker that crashed must not re-raise here and
+            # escape scanner_loop, which would kill the supervisor for good.
+            results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+            crashed = [r for r in results if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)]
+            if crashed:
+                logger.error("Scanner worker failed: %s", crashed[0])
             # Loop continues, which will pick up config changes and restart
 
         except Exception as exc:
@@ -874,8 +884,5 @@ async def scanner_loop(get_config_fn) -> None:
             for task in worker_tasks:
                 if not task.done():
                     task.cancel()
-            try:
-                await asyncio.gather(*worker_tasks)
-            except asyncio.CancelledError:
-                pass
+            await asyncio.gather(*worker_tasks, return_exceptions=True)
             await asyncio.sleep(5)  # Backoff before retry

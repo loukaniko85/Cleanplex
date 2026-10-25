@@ -110,6 +110,11 @@ async def _process(job: dict) -> str:
         )
         return "skipped"
 
+    limit = await _setting_int("videoskip_auto_daily_limit", 50)
+    if await db.reserve_videoskip_attempts(1, limit) == 0:
+        await db.requeue_videoskip_job(queue_id)
+        return "deferred"
+
     try:
         result = await videoskip_service.fetch_best(scan_job)
         if result is None:
@@ -185,6 +190,10 @@ async def run_queue() -> None:
                 continue
 
             status = await _process(job)
+            if status == "deferred":
+                logger.info("VideoSkip daily allowance is full — deferring the queue")
+                await asyncio.sleep(300)
+                continue
             if status == "failed":
                 _consecutive_failures += 1
             else:

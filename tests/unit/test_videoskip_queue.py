@@ -139,6 +139,46 @@ async def test_failed_below_attempt_ceiling_stays_eligible(setup_db):
     assert "retryable" in await db.get_guids_without_videoskip(max_attempts=2)
 
 
+async def test_daily_reservations_are_capped_and_shared(setup_db):
+    assert await db.reserve_videoskip_attempts(1, 2) == 1
+    assert await db.reserve_videoskip_attempts(1, 2) == 1
+    assert await db.reserve_videoskip_attempts(1, 2) == 0
+    assert await db.get_videoskip_daily_used() == 2
+
+    status = await db.get_videoskip_queue_status()
+    assert status["daily_used"] == 2
+
+    # 0 means unlimited, and a bulk reservation is clamped to what remains.
+    assert await db.reserve_videoskip_attempts(10, 0) == 10
+    assert await db.reserve_videoskip_attempts(10, 3) == 1
+
+
+async def test_skipped_rows_can_be_requeued_after_a_policy_change(setup_db):
+    await _job("a")
+    await db.enqueue_videoskip_job("a", "Oppenheimer")
+    claimed = await db.claim_next_videoskip_job()
+    await db.finish_videoskip_job(
+        claimed["id"], "skipped", error="Library is excluded from auto-fetch"
+    )
+
+    assert await db.requeue_videoskip_skipped("Library is excluded") == 1
+    assert (await db.get_videoskip_queue_status())["queued"] == 1
+
+
+async def test_requeueing_a_claimed_job_does_not_consume_an_attempt(setup_db):
+    await _job("a")
+    await db.enqueue_videoskip_job("a", "Oppenheimer")
+    claimed = await db.claim_next_videoskip_job()
+    assert claimed["attempts"] == 1
+
+    await db.requeue_videoskip_job(claimed["id"])
+
+    status = await db.get_videoskip_queue_status()
+    assert status["queued"] == 1
+    again = await db.claim_next_videoskip_job()
+    assert again["attempts"] == 1
+
+
 async def test_process_marks_done_and_records_source(monkeypatch, setup_db):
     await _job("a")
     await db.enqueue_videoskip_job("a", "Oppenheimer")

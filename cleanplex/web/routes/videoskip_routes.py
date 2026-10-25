@@ -180,6 +180,10 @@ async def auto_fetch(payload: AutoPayload):
     # already have segments, as before. A library/global sweep is a coverage
     # operation, so only titles without VideoSkip data are skipped.
     explicit_selection = bool(payload.plex_guids)
+    try:
+        daily_limit = int(await db.get_setting("videoskip_auto_daily_limit", "50") or 50)
+    except ValueError:
+        daily_limit = 50
 
     results = []
     applied = 0
@@ -195,6 +199,17 @@ async def auto_fetch(payload: AutoPayload):
                 {"plex_guid": guid, "title": job.get("title"), "status": "has_segments"}
             )
             continue
+
+        if await db.reserve_videoskip_attempts(1, daily_limit) == 0:
+            results.append(
+                {
+                    "plex_guid": guid,
+                    "title": job.get("title"),
+                    "status": "limit_reached",
+                    "error": "Daily VideoSkip limit reached",
+                }
+            )
+            break
 
         try:
             outcome = await videoskip_service.fetch_best(job, replace=payload.replace)

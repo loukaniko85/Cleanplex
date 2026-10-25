@@ -26,10 +26,11 @@ def client():
 
 # ── thumb_url ──────────────────────────────────────────────────────────────────
 
-def test_thumb_url_returns_full_url():
+def test_thumb_url_returns_proxy_url_without_token():
     c = PlexClient("http://plex:32400", "my-token")
     url = c.thumb_url("/library/metadata/1/thumb")
-    assert url == "http://plex:32400/library/metadata/1/thumb?X-Plex-Token=my-token"
+    assert url == "/api/plex-image?path=%2Flibrary%2Fmetadata%2F1%2Fthumb"
+    assert "my-token" not in url
 
 
 def test_thumb_url_empty_path_returns_empty():

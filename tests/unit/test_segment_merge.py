@@ -90,6 +90,59 @@ async def test_small_gap_merges_but_a_large_gap_does_not(setup_db):
     assert await db.merge_title_segments("title2") == 0
 
 
+async def test_scanner_rescan_only_deletes_pure_scanner_rows(setup_db):
+    await _job()
+    await db.insert_segments_bulk(
+        "title", "Oppenheimer", [_seg(1000, 2000, "nudity")], "scanner"
+    )
+    await db.insert_segments_bulk(
+        "title", "Oppenheimer", [_seg(3000, 4000, "sex")], "videoskip:776"
+    )
+    await db.insert_segments_bulk(
+        "title", "Oppenheimer", [_seg(5000, 6000, "violence")], "manual"
+    )
+    # A merged row whose primary source is the import but which also carries scanner.
+    await db.insert_segments_bulk(
+        "title", "Oppenheimer", [_seg(7000, 8000, "nudity")], "videoskip:777"
+    )
+    async with db.get_connection() as conn:
+        await conn.execute(
+            "UPDATE segments SET sources='scanner,videoskip:777' "
+            "WHERE source='videoskip:777' AND start_ms=7000"
+        )
+        await conn.commit()
+
+    removed = await db.delete_scanner_segments_for_guid("title")
+
+    assert removed == 1
+    remaining = await db.get_segments_for_guid("title")
+    assert {row["source"] for row in remaining} == {"videoskip:776", "manual", "videoskip:777"}
+
+
+async def test_source_prefix_delete_keeps_other_sources_on_a_merged_row(setup_db):
+    await _job()
+    await db.insert_segments_bulk(
+        "title", "Oppenheimer", [_seg(1000, 5000, "nudity")], "videoskip:1"
+    )
+    await db.insert_segments_bulk(
+        "title", "Oppenheimer", [_seg(9000, 10000, "sex")], "videoskip:1"
+    )
+    async with db.get_connection() as conn:
+        await conn.execute(
+            "UPDATE segments SET sources='videoskip:1,scanner' WHERE start_ms=1000"
+        )
+        await conn.commit()
+
+    removed = await db.delete_segments_by_source_prefix("title", "videoskip:")
+
+    assert removed == 1
+    rows = await db.get_segments_for_guid("title")
+    assert len(rows) == 1
+    assert rows[0]["start_ms"] == 1000
+    assert rows[0]["source"] == "scanner"
+    assert rows[0]["sources"] == "scanner"
+
+
 async def test_strict_categories_are_collected_from_user_preferences(setup_db):
     await db.upsert_user_category_pref("alice", "fear", 3)
     await db.upsert_user_category_pref("alice", "violence", 2)

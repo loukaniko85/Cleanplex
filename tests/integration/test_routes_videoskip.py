@@ -202,6 +202,21 @@ async def test_coverage_reports_totals_and_library_breakdown(http_client):
     assert body["libraries"][0]["library_title"] == "Movies"
 
 
+async def test_bulk_fetch_respects_the_daily_ceiling(http_client, mock_videoskip):
+    await db.set_setting("videoskip_auto_daily_limit", "1")
+    await _movie("plex://movie/a", "Oppenheimer")
+    await _movie("plex://movie/b", "Oppenheimer")
+
+    response = await http_client.post("/api/videoskip/auto", json={"limit": 10})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["imported"] == 1
+    statuses = [row["status"] for row in body["results"]]
+    assert "imported" in statuses
+    assert statuses[-1] == "limit_reached"
+
+
 async def test_exchange_health_reports_reachability(http_client, mock_videoskip):
     response = await http_client.get("/api/videoskip/health")
 

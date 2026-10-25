@@ -74,6 +74,23 @@ async def test_non_library_event_is_ignored(http_client):
     assert response.json()["ignored"] == "event"
 
 
+async def test_basic_auth_requires_a_webhook_token(http_client, monkeypatch):
+    monkeypatch.setenv("CLEANPLEX_AUTH_USER", "admin")
+    monkeypatch.setenv("CLEANPLEX_AUTH_PASS", "secret")
+    monkeypatch.delenv("CLEANPLEX_WEBHOOK_TOKEN", raising=False)
+
+    blocked = await http_client.post(
+        "/api/webhooks/plex", data={"payload": json.dumps(_payload())}
+    )
+    assert blocked.status_code == 503
+
+    monkeypatch.setenv("CLEANPLEX_WEBHOOK_TOKEN", "shh")
+    allowed = await http_client.post(
+        "/api/webhooks/plex?token=shh", data={"payload": json.dumps(_payload())}
+    )
+    assert allowed.status_code == 200
+
+
 async def test_webhook_status_records_every_delivery(http_client):
     await http_client.post(
         "/api/webhooks/plex",

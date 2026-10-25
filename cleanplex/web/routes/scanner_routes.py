@@ -138,8 +138,8 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
     excluded_library_ids: set[str] = set()
     scan_ratings_set: set[str] = set()
     if not body.now:
-        excluded_library_ids = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
-        scan_ratings_set = set(json.loads(await db.get_setting("scan_ratings", "[]")))
+        excluded_library_ids = set(await db.get_list_setting("excluded_library_ids", []))
+        scan_ratings_set = set(await db.get_list_setting("scan_ratings", []))
 
     queued = 0
     skipped = 0
@@ -235,4 +235,19 @@ async def toggle_title_ignored(plex_guid: str, body: ToggleIgnoredRequest):
         raise HTTPException(status_code=404, detail="Title not found")
     
     await db.set_ignored(plex_guid, body.ignored)
+
+    # A skipped VideoSkip row is terminal. Re-enabling the title must give it a
+    # fresh chance when auto-fetch is on, otherwise it stays uncovered forever.
+    if not body.ignored and (await db.get_setting("videoskip_auto_fetch", "0")) == "1":
+        try:
+            max_attempts = int(await db.get_setting("videoskip_auto_max_attempts", "2") or 2)
+        except ValueError:
+            max_attempts = 2
+        await db.enqueue_videoskip_job(
+            plex_guid,
+            job.get("title") or "",
+            max_attempts=max_attempts,
+            force=True,
+        )
+
     return {"ok": True, "plex_guid": plex_guid, "ignored": body.ignored}

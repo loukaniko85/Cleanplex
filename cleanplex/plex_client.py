@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 # TTL for per-show metadata cache; 10 minutes is long enough to cover a full
 # library-titles request without stale data causing visible issues.
@@ -595,9 +595,15 @@ class PlexClient:
     # ── Thumbnail proxy URL ───────────────────────────────────────────────────
 
     def thumb_url(self, thumb_path: str) -> str:
+        """Return a local proxy URL for a Plex thumbnail, never the token.
+
+        Handing out a token-bearing Plex URL leaked the admin credential to every
+        browser that loaded /api/sessions; the proxy attaches the token server-side
+        and validates the path (see fetch_image).
+        """
         if not thumb_path:
             return ""
-        return f"{self.url}{thumb_path}?X-Plex-Token={self.token}"
+        return f"/api/plex-image?path={quote(thumb_path, safe='')}"
 
     async def get_episode_show_art(self, rating_key: str) -> tuple[str, str, str, str, str]:
         """Return (show_guid, show_title, show_thumb_path, show_rating_key, season_rating_key) for an episode rating key.
