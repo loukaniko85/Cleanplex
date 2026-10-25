@@ -117,7 +117,9 @@ async def _import_sidecar(item) -> bool:
 
         segments, source = importers.parse_file(sidecar)
         count = await db.insert_segments_bulk(item.plex_guid, item.title, segments, source)
-        await db.update_scan_job_status(item.plex_guid, "completed", progress=100)
+        # "done" is the vocabulary the rest of the app uses (sync pickup, finished_at,
+        # dashboard); "completed" left sidecar-imported titles invisible to sync.
+        await db.update_scan_job_status(item.plex_guid, "done", progress=100)
         logger.info(
             "Imported %d segment(s) for '%s' from %s — skipping ML scan",
             count, item.title, sidecar.name,
@@ -159,12 +161,21 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                     )
                 except ValueError:
                     vs_max_attempts = 2
-                for item in items:
-                    if not item.file_path:
-                        continue
-                    if scan_ratings and (item.content_rating or "") not in scan_ratings:
-                        continue
-                    existing = await db.get_scan_job_by_guid(item.plex_guid)
+
+                # Filter first, then resolve existence for the whole section in one
+                # query. The old per-item get_scan_job_by_guid ran 24,000 lookups
+                # every 60 seconds on a large library.
+                candidates = [
+                    item for item in items
+                    if item.file_path
+                    and (not scan_ratings or (item.content_rating or "") in scan_ratings)
+                ]
+                existing_jobs = await db.get_scan_jobs_by_guids(
+                    [item.plex_guid for item in candidates]
+                )
+
+                for item in candidates:
+                    existing = existing_jobs.get(item.plex_guid)
                     if existing is None:
                         await db.upsert_scan_job(
                             plex_guid=item.plex_guid,

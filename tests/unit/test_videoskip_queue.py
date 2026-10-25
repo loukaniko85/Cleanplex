@@ -107,6 +107,38 @@ async def test_guids_without_videoskip_excludes_covered_titles(setup_db):
     assert guids == ["manual"]
 
 
+async def test_resolved_queue_rows_do_not_clog_the_sweep(setup_db):
+    """Regression: terminal no_match rows used to fill every sweep batch forever.
+
+    After the first batch resolved, get_guids_without_videoskip kept returning
+    the same oldest titles, enqueue refused them all, and no newer title could
+    ever be swept. A resolved title must leave the candidate pool.
+    """
+    for i in range(30):
+        await _job(f"title-{i}")
+
+    first = await db.get_guids_without_videoskip(limit=25)
+    assert len(first) == 25
+    for guid in first:
+        await db.enqueue_videoskip_job(guid, guid)
+        claimed = await db.claim_next_videoskip_job()
+        await db.finish_videoskip_job(claimed["id"], "no_match")
+
+    second = await db.get_guids_without_videoskip(limit=25)
+
+    assert second == [f"title-{i}" for i in range(25, 30)]
+
+
+async def test_failed_below_attempt_ceiling_stays_eligible(setup_db):
+    await _job("retryable")
+
+    await db.enqueue_videoskip_job("retryable", "Retryable", max_attempts=2)
+    claimed = await db.claim_next_videoskip_job()
+    await db.finish_videoskip_job(claimed["id"], "failed", error="network")
+
+    assert "retryable" in await db.get_guids_without_videoskip(max_attempts=2)
+
+
 async def test_process_marks_done_and_records_source(monkeypatch, setup_db):
     await _job("a")
     await db.enqueue_videoskip_job("a", "Oppenheimer")

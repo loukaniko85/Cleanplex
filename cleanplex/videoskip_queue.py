@@ -68,7 +68,9 @@ async def _maybe_sweep() -> None:
     max_attempts = await _setting_int("videoskip_auto_max_attempts", 2)
     allowed = await videoskip_service.allowed_libraries()
     guids = await db.get_guids_without_videoskip(
-        SWEEP_BATCH, library_ids=list(allowed) or None
+        SWEEP_BATCH,
+        library_ids=list(allowed) or None,
+        max_attempts=max_attempts,
     )
     jobs = await db.get_scan_jobs_by_guids(guids)
     queued = 0

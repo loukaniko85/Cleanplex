@@ -251,7 +251,9 @@ async def queue_missing(payload: EnqueuePayload):
     """Queue titles that have no VideoSkip segments yet."""
     limit = max(1, min(payload.limit, MAX_QUEUE_ENQUEUE))
     max_attempts = int(await db.get_setting("videoskip_auto_max_attempts", "2") or 2)
-    guids = await db.get_guids_without_videoskip(limit, payload.library_id)
+    guids = await db.get_guids_without_videoskip(
+        limit, payload.library_id, max_attempts=max_attempts
+    )
     jobs = await db.get_scan_jobs_by_guids(guids)
 
     queued = 0

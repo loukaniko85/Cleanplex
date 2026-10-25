@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from cleanplex import videoskip
+from cleanplex import videoskip_service
 from cleanplex.importers import skp
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "videoskip"
@@ -139,6 +140,60 @@ def test_score_match_does_not_match_an_episode_to_a_movie():
     assert videoskip.score_match(
         episode, media_type="movie", title="Winter Is Coming", year=2011
     ) is None
+
+
+def test_episode_from_a_different_show_is_rejected_even_with_same_position():
+    """Regression: 'Life' S1E2 and 'CIA' S1E2 both matched an SVU S1E2 page.
+
+    Season/episode alone is not evidence of identity across shows.
+    """
+    svu = videoskip.VideoRef(
+        video_id="5513",
+        title="A Single Life",
+        series="Law & Order: Special Victims Unit",
+        season=1,
+        episode=2,
+        year=1999,
+    )
+
+    assert videoskip.score_match(
+        svu, media_type="episode", title="Life", season=1, episode=2, year=2009
+    ) is None
+    assert videoskip.score_match(
+        svu, media_type="episode", title="CIA", season=1, episode=2, year=2020
+    ) is None
+
+
+def test_episode_series_containment_still_matches():
+    """Localised/expanded show names keep working through containment."""
+    video = videoskip.VideoRef(
+        video_id="1",
+        title="Pilot",
+        series="Marvel's Agents of S.H.I.E.L.D.",
+        season=1,
+        episode=1,
+        year=2013,
+    )
+
+    assert videoskip.score_match(
+        video, media_type="episode", title="Agents of S.H.I.E.L.D.", season=1, episode=1
+    ) is not None
+
+
+def test_cut_mismatch_rejects_a_file_from_a_far_shorter_cut():
+    """A 3-minute file against a 45-minute episode must not auto-apply."""
+    segments = [{"start_ms": 0, "end_ms": 230_000}]
+
+    error = videoskip_service.cut_mismatch_error(segments, 2_700_000)
+
+    assert error is not None
+    assert "different cut" in error
+
+
+def test_cut_mismatch_accepts_a_normally_covering_file():
+    segments = [{"start_ms": 60_000, "end_ms": 6_600_000}]
+
+    assert videoskip_service.cut_mismatch_error(segments, 7_200_000) is None
 
 
 def test_recommend_skip_prefers_a_stricter_audience_then_downloads():

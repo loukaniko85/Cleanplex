@@ -61,7 +61,7 @@ async def test_sidecar_import_marks_the_job_complete(tmp_path):
     await watcher._import_sidecar(_item(media))
 
     job = await db.get_scan_job_by_guid("guid-side")
-    assert job["status"] == "completed"
+    assert job["status"] == "done"
 
 
 async def test_missing_sidecar_falls_through_to_scanning(tmp_path):

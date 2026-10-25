@@ -303,6 +303,11 @@ async def init_db() -> None:
             "ALTER TABLE scan_jobs ADD COLUMN tmdb_id TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN season INTEGER",
             "ALTER TABLE scan_jobs ADD COLUMN episode INTEGER",
+            # scan_jobs is queried by library (coverage, sync, removal) and paged
+            # by created_at (sweeps); without these, every such query scans and
+            # temp-sorts the whole table (24k rows on a real library).
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_created ON scan_jobs(created_at, id)",
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_library ON scan_jobs(library_id)",
         ]
         for stmt in migrations:
             try:
@@ -754,20 +759,12 @@ def _merge_state(item: dict) -> dict:
     }
 
 
-async def merge_title_segments(plex_guid: str, gap_ms: int = 250) -> int:
-    """Merge overlapping segments sharing category/action/channel/language.
+def _plan_segment_merge(rows, gap_ms: int) -> list[dict]:
+    """Group rows by category/action/channel/language and merge overlapping spans.
 
-    Cross-category overlaps are deliberately kept: a viewer may filter violence
-    but not nudity, so collapsing them would skip content they wanted to see.
-    Returns the number of duplicate rows removed.
+    Pure function so the merge rules stay unit-testable apart from the write
+    transaction in merge_title_segments.
     """
-    async with get_connection() as conn:
-        rows = await conn.execute_fetchall(
-            "SELECT * FROM segments WHERE plex_guid=? ORDER BY start_ms", (plex_guid,)
-        )
-    if len(rows) < 2:
-        return 0
-
     groups: dict[tuple, list[dict]] = {}
     for row in rows:
         item = dict(row)
@@ -817,38 +814,63 @@ async def merge_title_segments(plex_guid: str, gap_ms: int = 250) -> int:
                 current = _merge_state(item)
         if current is not None:
             merged.append(current)
+    return merged
 
+
+async def merge_title_segments(plex_guid: str, gap_ms: int = 250) -> int:
+    """Merge overlapping segments sharing category/action/channel/language.
+
+    Cross-category overlaps are deliberately kept: a viewer may filter violence
+    but not nudity, so collapsing them would skip content they wanted to see.
+    Returns the number of duplicate rows removed.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT * FROM segments WHERE plex_guid=? ORDER BY start_ms", (plex_guid,)
+        )
+    if len(rows) < 2:
+        return 0
+
+    merged = _plan_segment_merge(rows, gap_ms)
     removed = len(rows) - len(merged)
     if removed == 0:
         return 0
 
     async with get_connection() as conn:
-        for row in merged:
-            ids = row["ids"]
-            primary = ids[0]
-            sources = sorted(row["sources"], key=lambda s: (-_source_rank(s), s))
-            await conn.execute(
-                "UPDATE segments SET start_ms=?, end_ms=?, confidence=?, labels=?, "
-                "severity=?, source=?, sources=?, thumbnail_path=? WHERE id=?",
-                (
-                    row["start_ms"],
-                    row["end_ms"],
-                    row["confidence"],
-                    ",".join(sorted(row["labels"])),
-                    row["severity"],
-                    row["source"],
-                    ",".join(sources),
-                    row["thumbnail_path"] or None,
-                    primary,
-                ),
-            )
-            extras = ids[1:]
-            if extras:
-                placeholders = ",".join("?" * len(extras))
+        # One transaction for the whole read-derived write set: the merge plan was
+        # computed from the rows read above, and a concurrent import for the same
+        # title must not have its new rows deleted as "duplicates".
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            for row in merged:
+                ids = row["ids"]
+                primary = ids[0]
+                sources = sorted(row["sources"], key=lambda s: (-_source_rank(s), s))
                 await conn.execute(
-                    f"DELETE FROM segments WHERE id IN ({placeholders})", extras
+                    "UPDATE segments SET start_ms=?, end_ms=?, confidence=?, labels=?, "
+                    "severity=?, source=?, sources=?, thumbnail_path=? WHERE id=?",
+                    (
+                        row["start_ms"],
+                        row["end_ms"],
+                        row["confidence"],
+                        ",".join(sorted(row["labels"])),
+                        row["severity"],
+                        row["source"],
+                        ",".join(sources),
+                        row["thumbnail_path"] or None,
+                        primary,
+                    ),
                 )
-        await conn.commit()
+                extras = ids[1:]
+                if extras:
+                    placeholders = ",".join("?" * len(extras))
+                    await conn.execute(
+                        f"DELETE FROM segments WHERE id IN ({placeholders})", extras
+                    )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
     return removed
 
 
@@ -995,6 +1017,50 @@ async def upsert_scan_job(
             (plex_guid, title, file_path, part_files, rating_key, library_id, library_title, content_rating, media_type, year, show_guid, show_rating_key, duration_ms, imdb_id, tmdb_id, season, episode),
         )
         await conn.commit()
+
+
+async def upsert_scan_jobs_bulk(items: list[dict]) -> int:
+    """Insert multiple new scan jobs in one transaction.
+
+    Discovery paths (library sync, scan-library) call this instead of
+    upsert_scan_job per title: one connection and one commit instead of tens of
+    thousands on a first sync, each of which used to occupy the event loop.
+    """
+    if not items:
+        return 0
+    columns = (
+        "plex_guid", "title", "file_path", "part_files", "rating_key",
+        "library_id", "library_title", "content_rating", "media_type", "year",
+        "show_guid", "show_rating_key", "duration_ms", "imdb_id", "tmdb_id",
+        "season", "episode",
+    )
+    placeholders = ",".join("?" * len(columns))
+    sql = (
+        f"INSERT OR IGNORE INTO scan_jobs({','.join(columns)}) "
+        f"VALUES({placeholders})"
+    )
+    async with get_connection() as conn:
+        await conn.executemany(
+            sql, [tuple(item.get(column) for column in columns) for item in items]
+        )
+        await conn.commit()
+    return len(items)
+
+
+async def recover_stale_scanning_jobs() -> int:
+    """Reset jobs left in 'scanning' by a crash or a cancelled worker pool.
+
+    Cancellation raises CancelledError (a BaseException), which scan_video's
+    `except Exception` cannot catch, so an in-flight row stays 'scanning' and
+    enqueue_pending (which only reads 'pending') would never retry it.
+    """
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE scan_jobs SET status='pending', progress=0, "
+            "updated_at=CURRENT_TIMESTAMP WHERE status='scanning'"
+        )
+        await conn.commit()
+        return cursor.rowcount
 
 
 async def get_existing_guids(guids: list[str]) -> set[str]:
@@ -1234,6 +1300,66 @@ async def get_videoskip_coverage() -> dict:
     return {**totals, "libraries": libraries}
 
 
+async def get_scan_coverage() -> dict:
+    """Return local-scan (NudeNet) coverage totals and a per-library breakdown.
+
+    Mirrors get_videoskip_coverage so the Settings page can show local scanning
+    and Exchange coverage side by side. "scanned" counts titles the scanner has
+    finished; "with_nudenet" counts titles that own at least one NudeNet-produced
+    segment, which is the number that actually means "filtered by ML".
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT
+                COALESCE(j.library_id, '') AS library_id,
+                COALESCE(NULLIF(j.library_title, ''), 'Unknown') AS library_title,
+                COUNT(*) AS total,
+                SUM(CASE WHEN j.status = 'done' THEN 1 ELSE 0 END) AS scanned,
+                SUM(CASE WHEN EXISTS (
+                    SELECT 1 FROM segments s WHERE s.plex_guid = j.plex_guid
+                ) THEN 1 ELSE 0 END) AS with_segments,
+                SUM(CASE WHEN EXISTS (
+                    SELECT 1 FROM segments s
+                    WHERE s.plex_guid = j.plex_guid
+                      AND (s.source = 'scanner' OR s.sources LIKE '%scanner%')
+                ) THEN 1 ELSE 0 END) AS with_nudenet
+            FROM scan_jobs j
+            WHERE COALESCE(j.ignored, 0) = 0
+            GROUP BY j.library_id, j.library_title
+            ORDER BY library_title COLLATE NOCASE
+            """
+        )
+
+    totals = {
+        "total": 0,
+        "scanned": 0,
+        "with_segments": 0,
+        "with_nudenet": 0,
+        "without_segments": 0,
+        "without_nudenet": 0,
+    }
+    libraries: list[dict] = []
+    for row in rows:
+        count = int(row["total"] or 0)
+        with_segments = int(row["with_segments"] or 0)
+        with_nudenet = int(row["with_nudenet"] or 0)
+        entry = {
+            "library_id": row["library_id"],
+            "library_title": row["library_title"],
+            "total": count,
+            "scanned": int(row["scanned"] or 0),
+            "with_segments": with_segments,
+            "with_nudenet": with_nudenet,
+            "without_segments": count - with_segments,
+            "without_nudenet": count - with_nudenet,
+        }
+        libraries.append(entry)
+        for key in totals:
+            totals[key] += entry[key]
+    return {**totals, "libraries": libraries}
+
+
 async def get_guids_missing_segments(
     limit: int = 25, library_id: str | None = None
 ) -> list[str]:
@@ -1262,23 +1388,30 @@ async def get_guids_without_videoskip(
     limit: int = 25,
     library_id: str | None = None,
     library_ids: list[str] | None = None,
+    max_attempts: int = 2,
 ) -> list[str]:
-    """Return guids of non-ignored titles with no VideoSkip-sourced segments.
+    """Return guids of non-ignored titles that the queue has not resolved yet.
 
-    Oldest titles come first so a sweep cannot starve the back of a large
-    library. `library_ids` limits the sweep to the libraries the user enabled.
+    Titles already resolved by the queue (`done`, `no_match`, `skipped`) and
+    titles that failed at the attempt ceiling are excluded. Without that
+    exclusion every sweep returned the same oldest no-match rows, spent its whole
+    batch re-refusing them, and could never reach the rest of a large library —
+    the "head clog". Oldest titles still come first so the sweep walks the
+    library in creation order.
     """
     sql = """
         SELECT j.plex_guid
         FROM scan_jobs j
+        LEFT JOIN videoskip_queue q ON q.plex_guid = j.plex_guid
         WHERE COALESCE(j.ignored, 0) = 0
+          AND (q.plex_guid IS NULL OR (q.status = 'failed' AND q.attempts < ?))
           AND NOT EXISTS (
               SELECT 1 FROM segments s
               WHERE s.plex_guid = j.plex_guid
                 AND (s.source LIKE 'videoskip:%' OR s.sources LIKE '%videoskip:%')
           )
     """
-    params: list = []
+    params: list = [max(1, int(max_attempts))]
     if library_id:
         sql += " AND j.library_id = ?"
         params.append(library_id)
@@ -1317,37 +1450,55 @@ async def enqueue_videoskip_job(
     Returns True when the title is now queued.
     """
     async with get_connection() as conn:
-        row = await (await conn.execute(
-            "SELECT status, attempts FROM videoskip_queue WHERE plex_guid=?",
-            (plex_guid,),
-        )).fetchone()
+        # BEGIN IMMEDIATE serialises this check-then-act. The sweep and the manual
+        # "queue missing" endpoint can enqueue the same guid concurrently; without
+        # it both observe "no row" and the second INSERT raises IntegrityError,
+        # which an HTTP caller would see as a 500 mid-loop.
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = await (await conn.execute(
+                "SELECT status, attempts FROM videoskip_queue WHERE plex_guid=?",
+                (plex_guid,),
+            )).fetchone()
 
-        if row is None:
-            await conn.execute(
-                "INSERT INTO videoskip_queue(plex_guid, title) VALUES(?, ?)",
-                (plex_guid, title),
+            if row is None:
+                await conn.execute(
+                    "INSERT INTO videoskip_queue(plex_guid, title) VALUES(?, ?)",
+                    (plex_guid, title),
+                )
+                await conn.commit()
+                return True
+
+            status = row["status"]
+            attempts = int(row["attempts"] or 0)
+            if status in ("queued", "running"):
+                await conn.commit()
+                return False
+            if not force:
+                if status in ("done", "no_match", "skipped"):
+                    await conn.commit()
+                    return False
+                if status == "failed" and attempts >= max_attempts:
+                    await conn.commit()
+                    return False
+
+            cursor = await conn.execute(
+                "UPDATE videoskip_queue SET status='queued', title=?, "
+                "attempts=CASE WHEN ? THEN 0 ELSE attempts END, "
+                "last_error='', updated_at=CURRENT_TIMESTAMP "
+                "WHERE plex_guid=? AND status NOT IN ('queued', 'running')",
+                (title, 1 if force else 0, plex_guid),
             )
             await conn.commit()
-            return True
-
-        status = row["status"]
-        attempts = int(row["attempts"] or 0)
-        if status in ("queued", "running"):
+            # rowcount 0 means a worker claimed the row between BEGIN IMMEDIATE
+            # and the UPDATE on another connection; it is already queued/running.
+            return cursor.rowcount > 0
+        except aiosqlite.IntegrityError:
+            await conn.rollback()
             return False
-        if not force:
-            if status in ("done", "no_match", "skipped"):
-                return False
-            if status == "failed" and attempts >= max_attempts:
-                return False
-
-        await conn.execute(
-            "UPDATE videoskip_queue SET status='queued', title=?, "
-            "attempts=CASE WHEN ? THEN 0 ELSE attempts END, "
-            "last_error='', updated_at=CURRENT_TIMESTAMP WHERE plex_guid=?",
-            (title, 1 if force else 0, plex_guid),
-        )
-        await conn.commit()
-        return True
+        except BaseException:
+            await conn.rollback()
+            raise
 
 
 async def claim_next_videoskip_job() -> dict | None:

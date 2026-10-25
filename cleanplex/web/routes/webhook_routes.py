@@ -86,7 +86,11 @@ async def plex_webhook(request: Request, token: str = ""):
         await _record(event, rating_key, title, "ignored", "plex not configured")
         return {"ok": True, "ignored": "plex not configured"}
 
-    item = await client.get_library_item(str(rating_key))
+    try:
+        item = await client.get_library_item(str(rating_key))
+    except RuntimeError as exc:
+        await _record(event, rating_key, title, "plex_error", str(exc)[:200])
+        return {"ok": True, "ignored": "plex lookup failed"}
     if item is None or not item.file_path:
         await _record(event, rating_key, title, "ignored", "item not found")
         return {"ok": True, "ignored": "item not found"}

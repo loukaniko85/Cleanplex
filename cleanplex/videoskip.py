@@ -222,6 +222,24 @@ def _norm(value: str) -> str:
     return _WS_RE.sub(" ", value).strip()
 
 
+def _word_affinity(wanted: str, found: str) -> int:
+    """Score two normalized titles: 2 equal, 1 word-subset, 0 unrelated.
+
+    Word-level comparison, not substring: "cia" is a substring of "special", and
+    that false positive used to let unrelated titles match ("CIA" S1E2 against
+    "Law & Order: Special Victims Unit").
+    """
+    wanted_words = set(wanted.split())
+    found_words = set(found.split())
+    if not wanted_words or not found_words:
+        return 0
+    if wanted_words == found_words:
+        return 2
+    if wanted_words <= found_words or found_words <= wanted_words:
+        return 1
+    return 0
+
+
 def score_match(
     video: VideoRef,
     *,
@@ -261,12 +279,17 @@ def score_match(
         wanted = _norm(title)
         found = _norm(video.series)
         if wanted and found:
-            if wanted == found:
+            affinity = _word_affinity(wanted, found)
+            if affinity == 2:
                 score += 50
-            elif wanted in found or found in wanted:
+            elif affinity == 1:
                 score += 20
             else:
-                score -= 10
+                # Season/episode numbers are not unique across shows. With no
+                # series-name signal, any other show's S1E2 can outrank the real
+                # match and its file would be applied to the wrong title (this is
+                # how "Life" and "CIA" both received one Law & Order SVU file).
+                return None
         if year and video.year:
             score += 10 if year == video.year else -5
         return score
@@ -283,10 +306,12 @@ def score_match(
         score += 100
     elif wanted.startswith(found) or found.startswith(wanted):
         score += 50
-    elif wanted in found or found in wanted:
-        score += 25
     else:
-        return None
+        affinity = _word_affinity(wanted, found)
+        if affinity == 1:
+            score += 25
+        else:
+            return None
 
     if year and video.year:
         score += 30 if year == video.year else -10
