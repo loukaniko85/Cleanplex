@@ -9,6 +9,8 @@ interface Settings {
   poll_interval: string
   confidence_threshold: string
   skip_buffer_ms: string
+  pre_buffer_ms: string
+  post_buffer_ms: string
   scan_step_ms: string
   scan_workers: string
   nudenet_model: string
@@ -131,6 +133,8 @@ const DEFAULT: Settings = {
   poll_interval: '5',
   confidence_threshold: '0.6',
   skip_buffer_ms: '3000',
+  pre_buffer_ms: '3000',
+  post_buffer_ms: '3000',
   scan_step_ms: '5000',
   scan_workers: '2',
   nudenet_model: '320n',
@@ -550,8 +554,11 @@ export default function SettingsPage() {
           <Field label="Minimum Hits Per Segment" hint="Require at least this many flagged frames in a cluster to keep a segment. Increase to reduce false positives.">
             <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />
           </Field>
-          <Field label="Skip Buffer (ms)" hint="Extra milliseconds to seek past the end of a detected segment">
-            <input type="number" min="0" step="500" value={form.skip_buffer_ms} onChange={set('skip_buffer_ms')} className={inputCls} />
+          <Field label="Pre Buffer (ms)" hint="Start the skip this many milliseconds before a segment begins, so flagged content is never briefly shown.">
+            <input type="number" min="0" step="500" value={form.pre_buffer_ms} onChange={set('pre_buffer_ms')} className={inputCls} />
+          </Field>
+          <Field label="Post Buffer (ms)" hint="Land this many milliseconds past the end of a segment so the skip clears the content.">
+            <input type="number" min="0" step="500" value={form.post_buffer_ms} onChange={set('post_buffer_ms')} className={inputCls} />
           </Field>
         </div>
       </section>

@@ -157,4 +157,18 @@ describe('CategoryMatrix', () => {
       expect(lastCall[1].signal).toBeInstanceOf(AbortSignal)
     })
   })
+
+  it('applies a kids preset and refetches the categories', async () => {
+    mockApi.get.mockResolvedValue(defaults)
+
+    render(<CategoryMatrix username="alice" enabled={true} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'kids' })).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'kids' }))
+
+    await waitFor(() => {
+      expect(mockApi.put).toHaveBeenCalledWith('/api/users/alice/preset/kids', {})
+    })
+    expect(mockApi.get.mock.calls.filter(c => c[0] === '/api/users/alice/categories').length).toBeGreaterThan(1)
+  })
 })

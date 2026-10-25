@@ -171,17 +171,21 @@ export default function Analytics() {
       .finally(() => setLoadingRatings(false))
   }, [drillLabel])
 
+  const segmentRequest = useRef(0)
   const fetchSegments = useCallback(async (labels: string[], p: number) => {
     if (!labels.length) { setSegments([]); setTotalSegments(0); return }
+    const requestId = ++segmentRequest.current
     setLoadingSegments(true)
     try {
       const d = await api.get<{ segments: Segment[]; total: number }>(
         `/api/analytics/segments?labels=${encodeURIComponent(labels.join(','))}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`
       )
+      // Ignore a slow response for a filter the user has already changed.
+      if (requestId !== segmentRequest.current) return
       setSegments(d.segments)
       setTotalSegments(d.total)
     } finally {
-      setLoadingSegments(false)
+      if (requestId === segmentRequest.current) setLoadingSegments(false)
     }
   }, [])
 
@@ -229,6 +233,8 @@ export default function Analytics() {
           tokens.includes(lc.label) ? { ...lc, count: Math.max(0, lc.count - 1) } : lc
         ).filter(lc => lc.count > 0)
       })
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not delete this segment.')
     } finally {
       setDeletingSegs(d => ({ ...d, [seg.id]: false }))
     }

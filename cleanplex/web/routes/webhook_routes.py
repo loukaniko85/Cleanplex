@@ -15,7 +15,14 @@ from ...logger import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
-WEBHOOK_TOKEN = os.environ.get("CLEANPLEX_WEBHOOK_TOKEN", "").strip()
+def _webhook_token() -> str:
+    return os.environ.get("CLEANPLEX_WEBHOOK_TOKEN", "").strip()
+
+
+def _auth_enabled() -> bool:
+    return bool(os.environ.get("CLEANPLEX_AUTH_USER", "").strip()) and bool(
+        os.environ.get("CLEANPLEX_AUTH_PASS", "")
+    )
 
 
 async def _record(
@@ -35,7 +42,7 @@ async def webhook_status():
     """Return recent deliveries so the UI can prove whether Plex reached us."""
     status = await db.get_webhook_status()
     status["auto_fetch"] = (await db.get_setting("videoskip_auto_fetch", "0")) == "1"
-    status["token_required"] = bool(WEBHOOK_TOKEN)
+    status["token_required"] = bool(_webhook_token())
     return status
 
 
@@ -47,7 +54,14 @@ async def plex_webhook(request: Request, token: str = ""):
     recorded, including ignored ones, so "did the webhook work?" has a visible
     answer in Settings.
     """
-    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
+    webhook_token = _webhook_token()
+    if _auth_enabled() and not webhook_token:
+        await _record("", "", "", "rejected", "auth enabled without webhook token")
+        raise HTTPException(
+            status_code=503,
+            detail="Set CLEANPLEX_WEBHOOK_TOKEN when HTTP Basic auth is enabled",
+        )
+    if webhook_token and token != webhook_token:
         await _record("", "", "", "unauthorized", "invalid webhook token")
         raise HTTPException(status_code=401, detail="Invalid webhook token")
 

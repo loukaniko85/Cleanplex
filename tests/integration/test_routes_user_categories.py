@@ -82,3 +82,32 @@ async def test_reset_clears_stored_prefs(http_client):
 
     assert resp.json()["removed"] == 1
     assert (await http_client.get("/api/users/alice/categories")).json()["uses_defaults"] is True
+
+
+async def test_apply_kids_preset_sets_levels_and_mutes_profanity(http_client):
+    resp = await http_client.put("/api/users/alice/preset/kids")
+
+    assert resp.status_code == 200
+    assert resp.json()["preset"] == "kids"
+    prefs = await db.get_user_category_prefs("alice")
+    assert prefs["nudity"]["level"] == 3
+    assert prefs["violence"]["level"] == 3
+    assert prefs["language"]["action"] == "mute"
+    assert prefs["language"]["level"] == 3
+
+
+async def test_apply_adults_preset_is_lighter_than_teens(http_client):
+    await http_client.put("/api/users/alice/preset/teens")
+    teens = await db.get_user_category_prefs("alice")
+    await http_client.put("/api/users/alice/preset/adults")
+    adults = await db.get_user_category_prefs("alice")
+
+    assert adults["nudity"]["level"] < teens["nudity"]["level"]
+    assert adults["drugs"]["level"] == 0
+
+
+async def test_unknown_preset_is_rejected(http_client):
+    resp = await http_client.put("/api/users/alice/preset/banana")
+
+    assert resp.status_code == 422
+    assert "Unknown preset" in resp.json()["detail"]

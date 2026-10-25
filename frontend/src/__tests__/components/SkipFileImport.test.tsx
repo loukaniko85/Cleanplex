@@ -203,4 +203,42 @@ describe('SkipFileImport', () => {
     })
     expect(await screen.findByText(/Imported 4 segments from videoskip:776/)).toBeInTheDocument()
   })
+
+  it('fetches jump scares from WhenJumpScare and reports the count', async () => {
+    mockApi.post.mockResolvedValue({
+      imported: 13,
+      scares: 13,
+      source: 'whenjumpscare:138843',
+      title: 'The Conjuring',
+    })
+
+    render(<SkipFileImport plexGuid="guid-1" />)
+    fireEvent.click(screen.getByText('Jump scares'))
+    fireEvent.click(screen.getByText('Fetch jump scares'))
+
+    await waitFor(() => {
+      expect(mockApi.post).toHaveBeenCalledWith('/api/jumpscares/title/guid-1')
+    })
+    expect(
+      await screen.findByText(/Imported 13 jump-scare segments \(13 listed\)\./),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the empty result when a film has no listed jump scares', async () => {
+    mockApi.post.mockResolvedValue({
+      imported: 0,
+      scares: 0,
+      source: '',
+      title: 'The Lion King',
+      message: 'WhenJumpScare lists no jumpscares for this film.',
+    })
+
+    render(<SkipFileImport plexGuid="guid-1" />)
+    fireEvent.click(screen.getByText('Jump scares'))
+    fireEvent.click(screen.getByText('Fetch jump scares'))
+
+    expect(
+      await screen.findByText(/WhenJumpScare lists no jumpscares for this film\./),
+    ).toBeInTheDocument()
+  })
 })

@@ -101,6 +101,22 @@ export default function CategoryMatrix({ username, enabled }: Props) {
     setData(fresh)
   }
 
+  const applyPreset = async (preset: 'kids' | 'teens' | 'adults') => {
+    setError('')
+    setLoading(true)
+    try {
+      await api.put(`/api/users/${encodeURIComponent(username)}/preset/${preset}`, {})
+      const fresh = await api.get<CategoriesResponse>(
+        `/api/users/${encodeURIComponent(username)}/categories`,
+      )
+      setData(fresh)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not apply the preset.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   if (loading) return <div className="text-gray-500 text-sm px-5 py-4">Loading categories...</div>
   if (!data) return null
 
@@ -124,6 +140,22 @@ export default function CategoryMatrix({ username, enabled }: Props) {
             <RotateCcw size={12} /> Reset
           </button>
         )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-plex-border">
+        <span className="text-xs text-gray-500">Start from a profile:</span>
+        {(['kids', 'teens', 'adults'] as const).map(preset => (
+          <button
+            key={preset}
+            onClick={() => applyPreset(preset)}
+            className="px-2.5 py-1 rounded-full text-xs border border-plex-border text-gray-300 hover:border-plex-orange/50 hover:text-plex-orange capitalize"
+          >
+            {preset}
+          </button>
+        ))}
+        <span className="text-[11px] text-gray-600">
+          Replaces this user's levels with a tuned starting point.
+        </span>
       </div>
 
       {error && <p className="text-xs text-red-400 px-5 pt-3">{error}</p>}

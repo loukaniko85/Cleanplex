@@ -1,5 +1,7 @@
 """Web API routes for segment library synchronization."""
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, Body
 from pydantic import BaseModel
 

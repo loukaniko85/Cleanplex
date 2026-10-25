@@ -6,6 +6,20 @@ const LION_KING_LIST = [
 ].join('\n')
 
 test.describe('Library — paste import', () => {
+  test('offers the WhenJumpScare tab', async ({ page }) => {
+    await page.goto('/library')
+    await page.getByRole('button', { name: 'Movies', exact: true }).click()
+    await expect(page.getByText('Movie One')).toBeVisible()
+    await page
+      .locator('button[title="Import a skip file or fetch this title from VideoSkip"]')
+      .first()
+      .click()
+    await page.getByRole('button', { name: 'Jump scares' }).click()
+
+    await expect(page.getByText(/Human-timed jumpscares from WhenJumpScare/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Fetch jump scares' })).toBeVisible()
+  })
+
   test('pastes a scene list and applies a category override through the UI', async ({ page }) => {
     await page.goto('/library')
 

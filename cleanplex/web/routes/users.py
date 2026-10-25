@@ -106,3 +106,67 @@ async def reset_user_categories(username: str):
     """Clear a user's category preferences, reverting them to the defaults."""
     removed = await db.delete_user_category_prefs(username)
     return {"ok": True, "removed": removed}
+
+
+# ClearPlay/VidAngel-style starter profiles. Levels follow the threshold model
+# (level + severity rank > 3 fires); language mutes instead of skipping.
+FILTER_PRESETS: dict[str, dict[str, dict]] = {
+    "kids": {
+        "nudity": {"level": 3, "action": "skip"},
+        "sex": {"level": 3, "action": "skip"},
+        "violence": {"level": 3, "action": "skip"},
+        "language": {"level": 3, "action": "mute"},
+        "drugs": {"level": 3, "action": "skip"},
+        "fear": {"level": 2, "action": "skip"},
+        "discrimination": {"level": 3, "action": "skip"},
+        "commercial": {"level": 1, "action": "skip"},
+        "dispensable": {"level": 1, "action": "skip"},
+        "other": {"level": 3, "action": "skip"},
+    },
+    "teens": {
+        "nudity": {"level": 3, "action": "skip"},
+        "sex": {"level": 3, "action": "skip"},
+        "violence": {"level": 2, "action": "skip"},
+        "language": {"level": 2, "action": "mute"},
+        "drugs": {"level": 2, "action": "skip"},
+        "fear": {"level": 1, "action": "skip"},
+        "discrimination": {"level": 2, "action": "skip"},
+        "commercial": {"level": 1, "action": "skip"},
+        "dispensable": {"level": 1, "action": "skip"},
+        "other": {"level": 2, "action": "skip"},
+    },
+    "adults": {
+        "nudity": {"level": 2, "action": "skip"},
+        "sex": {"level": 2, "action": "skip"},
+        "violence": {"level": 1, "action": "skip"},
+        "language": {"level": 1, "action": "mute"},
+        "drugs": {"level": 0, "action": ""},
+        "fear": {"level": 0, "action": ""},
+        "discrimination": {"level": 1, "action": "skip"},
+        "commercial": {"level": 1, "action": "skip"},
+        "dispensable": {"level": 0, "action": ""},
+        "other": {"level": 1, "action": "skip"},
+    },
+}
+
+
+@router.put("/{username}/preset/{preset}")
+async def apply_user_preset(username: str, preset: str):
+    """Apply a starter filtering profile to a user (kids / teens / adults).
+
+    Commercial filters ship households with sensible profiles; Cleanplex only
+    had per-category sliders, which forces every user to invent one from scratch.
+    """
+    profile = FILTER_PRESETS.get(preset)
+    if profile is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown preset {preset!r}. Expected one of {', '.join(FILTER_PRESETS)}.",
+        )
+    await db.delete_user_category_prefs(username)
+    for category, pref in profile.items():
+        await db.upsert_user_category_pref(
+            username, category, int(pref["level"]), str(pref["action"])
+        )
+    logger.info("Applied '%s' filter preset to user %s", preset, username)
+    return {"ok": True, "preset": preset, "categories": len(profile)}

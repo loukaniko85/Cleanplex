@@ -241,8 +241,11 @@ export default function Library() {
   }, [])
 
   // Auto-refresh titles while scanning; cancel in-flight request before each new tick.
+  // Depend on a primitive: scannerStatus is replaced every 3s poll, so depending on
+  // the object tore this effect down before its own interval could ever fire.
+  const activeScanCount = scannerStatus?.active_scans.length ?? 0
   useEffect(() => {
-    if (!selected || !scannerStatus || scannerStatus.active_scans.length === 0) return
+    if (!selected || activeScanCount === 0) return
     let controller = new AbortController()
 
     const tick = async () => {
@@ -262,7 +265,7 @@ export default function Library() {
       clearInterval(id)
       controller.abort()
     }
-  }, [selected, scannerStatus])
+  }, [selected, activeScanCount])
 
   const loadTitles = useCallback(async (libId: string) => {
     const d = await api.get<{ titles: Title[] }>(`/api/libraries/${libId}/titles`)
@@ -560,21 +563,33 @@ export default function Library() {
   const fetchVideoSkipSelected = async () => {
     if (!selected || selectedGuids.length === 0) return
     setBulkFetching(true)
+    // The API caps one request at 25 titles; chunk so "select all" is not
+    // silently truncated to the first batch.
+    const CHUNK = 25
+    const totals = { attempted: 0, imported: 0, skipped: 0, failed: 0 }
     try {
-      const res = await api.post<{
-        attempted: number
-        imported: number
-        results: { status: string }[]
-      }>('/api/videoskip/auto', { plex_guids: selectedGuids })
-      const skipped = res.results.filter(r => r.status !== 'imported').length
+      for (let i = 0; i < selectedGuids.length; i += CHUNK) {
+        const chunk = selectedGuids.slice(i, i + CHUNK)
+        try {
+          const res = await api.post<{
+            attempted: number
+            imported: number
+            results: { status: string }[]
+          }>('/api/videoskip/auto', { plex_guids: chunk })
+          totals.attempted += res.attempted
+          totals.imported += res.imported
+          totals.skipped += res.results.filter(r => r.status !== 'imported').length
+        } catch {
+          totals.failed += chunk.length
+        }
+      }
       setSelectedGuids([])
       setTitles(await loadTitles(selected.id))
       alert(
-        `VideoSkip: imported ${res.imported} of ${res.attempted} title(s).` +
-          (skipped ? ` ${skipped} had no match or already had segments.` : ''),
+        `VideoSkip: imported ${totals.imported} of ${totals.attempted} title(s).` +
+          (totals.skipped ? ` ${totals.skipped} had no match or already had segments.` : '') +
+          (totals.failed ? ` ${totals.failed} request(s) failed — try again.` : ''),
       )
-    } catch (err: any) {
-      alert(`VideoSkip fetch failed: ${err.message || 'Unknown error'}`)
     } finally {
       setBulkFetching(false)
     }

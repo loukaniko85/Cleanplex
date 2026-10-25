@@ -35,12 +35,19 @@ interface VideoSkipResponse {
   matches: VideoSkipMatch[]
 }
 
+interface JumpscareResult {
+  imported: number
+  scares: number
+  message?: string
+  warning?: string
+}
+
 interface Props {
   plexGuid: string
   onImported?: (count: number) => void
 }
 
-type Mode = 'file' | 'paste' | 'videoskip'
+type Mode = 'file' | 'paste' | 'videoskip' | 'jumpscare'
 
 export default function SkipFileImport({ plexGuid, onImported }: Props) {
   const [mode, setMode] = useState<Mode>('file')
@@ -55,6 +62,9 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
   const [vsData, setVsData] = useState<VideoSkipResponse | null>(null)
   const [vsReload, setVsReload] = useState(0)
   const [applyingSkip, setApplyingSkip] = useState<string | null>(null)
+  const [jsLoading, setJsLoading] = useState(false)
+  const [jsError, setJsError] = useState('')
+  const [jsResult, setJsResult] = useState<JumpscareResult | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const finish = (res: ImportResult) => {
@@ -135,6 +145,23 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
     }
   }
 
+  const fetchJumpscares = async () => {
+    setJsLoading(true)
+    setJsError('')
+    setJsResult(null)
+    try {
+      const res = await api.post<JumpscareResult>(
+        `/api/jumpscares/title/${encodeURIComponent(plexGuid)}`,
+      )
+      setJsResult(res)
+      if (res.imported > 0) onImported?.(res.imported)
+    } catch (e) {
+      setJsError(e instanceof Error ? e.message : 'Could not fetch jump scares.')
+    } finally {
+      setJsLoading(false)
+    }
+  }
+
   const exportAs = async (fmt: 'edl' | 'mcf') => {
     const res = await api.get<{ body: string }>(
       `/api/segments/export/${encodeURIComponent(plexGuid)}?fmt=${fmt}`,
@@ -177,6 +204,16 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
           }`}
         >
           <Search size={12} /> VideoSkip
+        </button>
+        <button
+          onClick={() => setMode('jumpscare')}
+          className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 border ${
+            mode === 'jumpscare'
+              ? 'bg-plex-orange border-plex-orange text-white'
+              : 'border-plex-border text-gray-400'
+          }`}
+        >
+          <AlertTriangle size={12} /> Jump scares
         </button>
 
         <label className="ml-auto flex items-center gap-1.5 text-xs text-gray-500">
@@ -243,7 +280,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
             {busy ? 'Importing...' : 'Import list'}
           </button>
         </div>
-      ) : (
+      ) : mode === 'videoskip' ? (
         <div className="space-y-2">
           <div className="flex items-start gap-2">
             <p className="text-[11px] text-gray-600 flex-1">
@@ -327,6 +364,33 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
             <p className="text-[11px] text-amber-400">
               This title already has {vsData.existing_segments} segment
               {vsData.existing_segments === 1 ? '' : 's'}. Tick “Replace existing” to overwrite them.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-[11px] text-gray-600">
+            Human-timed jumpscares from WhenJumpScare (films only). Lookups are on demand;
+            nothing is bundled or mirrored.
+          </p>
+          <button
+            onClick={fetchJumpscares}
+            disabled={jsLoading}
+            className="px-3 py-1.5 rounded text-xs bg-plex-orange text-white disabled:opacity-40"
+          >
+            {jsLoading ? 'Fetching…' : 'Fetch jump scares'}
+          </button>
+          {jsError && (
+            <p className="text-xs text-red-400 flex items-start gap-1.5">
+              <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" /> {jsError}
+            </p>
+          )}
+          {jsResult && (
+            <p className="text-xs text-green-400">
+              <Check size={12} className="inline mr-1" />
+              {jsResult.imported > 0
+                ? `Imported ${jsResult.imported} jump-scare segment${jsResult.imported === 1 ? '' : 's'} (${jsResult.scares} listed).`
+                : jsResult.message || 'No jump scares listed.'}
             </p>
           )}
         </div>

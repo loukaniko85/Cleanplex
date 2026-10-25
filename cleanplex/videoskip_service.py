@@ -8,7 +8,7 @@ import re
 from . import database as db
 from . import videoskip
 from .importers import skp
-from .importers._common import runtime_warning
+from .importers._common import ParseError, runtime_warning
 from .logger import get_logger
 
 logger = get_logger(__name__)

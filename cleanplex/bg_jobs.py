@@ -139,7 +139,7 @@ async def get_job_status(job_id: int) -> dict | None:
     if job.get('result_data'):
         try:
             result_data = json.loads(job['result_data'])
-        except:
+        except (TypeError, ValueError):
             pass
     
     return {

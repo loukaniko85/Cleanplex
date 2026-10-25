@@ -25,6 +25,7 @@ from .routes.sync_routes import router as sync_router
 from .routes.mcp_routes import router as mcp_router
 from .routes.analytics_routes import router as analytics_router
 from .routes.marker_routes import router as marker_router
+from .routes.jumpscare_routes import router as jumpscare_router
 from .routes.import_routes import router as import_router
 from .routes.videoskip_routes import router as videoskip_router
 from .routes.webhook_routes import router as webhook_router
@@ -37,7 +38,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Cleanplex",
         description="Plex content filter service",
-        version="1.0.0",
+        version="1.0.5",
     )
 
     @app.exception_handler(Exception)
@@ -56,12 +57,20 @@ def create_app() -> FastAPI:
             content={"detail": "Internal server error — see the Cleanplex log for details."},
         )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # The built UI is same-origin, so cross-origin access is opt-in. A wildcard
+    # here let any website read API responses from a LAN deployment.
+    cors_origins = [
+        origin.strip()
+        for origin in os.environ.get("CLEANPLEX_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     # Optional HTTP Basic auth. Empty env vars keep the original LAN-only
     # behaviour; setting both is enough to protect the UI and API behind a
@@ -113,6 +122,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_router)
     app.include_router(analytics_router)
     app.include_router(marker_router)
+    app.include_router(jumpscare_router)
     app.include_router(import_router)
     app.include_router(videoskip_router)
     app.include_router(webhook_router)

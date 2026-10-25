@@ -294,6 +294,18 @@ Settings → **VideoSkip Exchange** can run lookups in the background. It is **o
 The queue targets titles with **no VideoSkip-sourced segments**, not titles with no segments at all,
 so a NudeNet-only scan does not hide a title from human-graded coverage.
 
+### Jump scares (WhenJumpScare)
+
+Films can also pull human-timed **fear** markers from
+[WhenJumpScare](https://www.whenjumpscare.com/): open a title in the Library, choose the
+**Jump scares** tab, and fetch. Lookups are on demand and rate-limited; the service's
+terms allow per-title lookups but not bulk redistribution, so Cleanplex never mirrors its
+catalogue. TV episodes are not covered (the site indexes films only).
+
+Each scare becomes a short `fear`/`skip` segment centered on the moment (minor scares are
+medium severity, major ones high) and replaces any previous WhenJumpScare data for that
+title. It is additive to NudeNet and file imports.
+
 ### Plex webhook (optional, Plex Pass)
 
 The library watcher already discovers new titles within about a minute. If you want
@@ -374,6 +386,7 @@ only. Those categories are populated by importing skip files, where humans have 
 
 #### Library
 - **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, paste a timestamp list, export segments as EDL/MCF, or fetch from the VideoSkip Exchange
+- **Jump scares** — Films with a TMDB id can fetch human-timed fear markers from WhenJumpScare (on demand; nothing is bundled or mirrored)
 - **VideoSkip lookup** — The download icon on every title opens the import panel; the VideoSkip tab shows each candidate file's author, filter description and download count, with a recommended pick
 - **Bulk fetch** — Select titles and use **Fetch VideoSkip** to match the whole selection in one bounded run
 - **Browse all titles** with scan status icons
@@ -393,6 +406,7 @@ only. Those categories are populated by importing skip files, where humans have 
 
 #### Users
 - **Toggle filtering per Plex account** — Turn skipping on/off for specific user accounts
+- **Filter profiles** — Apply a Kids, Teens or Adults starter profile (per-category levels with profanity muted), then fine-tune
 - **Category preferences** — Expand a user to set a 0–3 strictness level per content category, with an optional skip/mute override
 
 #### Settings

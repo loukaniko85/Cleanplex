@@ -16,6 +16,7 @@ from .watcher import session_watcher_loop, library_watcher_loop
 from .scanner import scanner_loop
 from .videoskip_queue import run_queue as videoskip_queue_loop
 from . import videoskip
+from . import whenjumpscare
 from .web.app import create_app
 from .bg_jobs import recover_stale_jobs
 
@@ -96,6 +97,7 @@ async def _amain() -> None:
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
         await videoskip.close_client()
+        await whenjumpscare.close_client()
         try:
             plex_client = plex_mod.get_client()
         except RuntimeError:
