@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cleanplex"
-version = "1.0.6"
+version = "1.0.7"
 description = "Plex content filter service — automatically skips inappropriate scenes"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

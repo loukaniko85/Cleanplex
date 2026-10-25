@@ -202,3 +202,33 @@ async def test_skip_session_seeks_to_next_segment(http_client):
     data = resp.json()
     assert data["ok"] is True
     assert data["seek_to_ms"] == 25000  # 30000 - 5000 (expansion)
+
+
+async def test_clients_lists_registry_and_uncontrollable_web_session(http_client):
+    from cleanplex.plex_client import PlexClientInfo
+
+    tv = PlexClientInfo("tv-1", "Living Room", "Plex for Android", "Shield",
+                        ("playback", "timeline"))
+    web_session = _active_session(session_key="web", is_controllable=False)
+    web_session.client_identifier = "web-1"
+    web_session.client_title = "Firefox"
+    web_session.client_product = "Plex Web"
+    web_session.control_note = "This client does not accept remote commands (Plex Web)."
+
+    fake = MagicMock()
+    fake.get_clients = AsyncMock(return_value=[tv])
+    fake.get_active_sessions = AsyncMock(return_value=[web_session])
+    fake.last_control_error = "HTTP 400 from player"
+
+    with patch("cleanplex.web.routes.sessions.plex_mod.get_client", return_value=fake):
+        resp = await http_client.get("/api/sessions/clients")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["known"] is True
+    assert body["last_control_error"].startswith("HTTP 400")
+    entries = {entry["machine_identifier"]: entry for entry in body["clients"]}
+    assert entries["tv-1"]["controllable"] is True
+    assert entries["web-1"]["controllable"] is False
+    assert "Plex Web" in entries["web-1"]["note"]
+    assert entries["web-1"]["active"] is True

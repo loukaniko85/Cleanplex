@@ -34,6 +34,9 @@ async def get_sessions():
             "client": s.client_title,
             "is_controllable": s.is_controllable,
             "filtering_enabled": filtering_enabled,
+            "control_note": s.control_note,
+            "client_product": s.client_product,
+            "capabilities": s.capabilities,
             "thumb_url": client.thumb_url(s.thumb) if s.thumb else "",
         })
     return {"sessions": result, "error": client.last_session_error or None}
@@ -42,6 +45,60 @@ async def get_sessions():
 @router.get("/events")
 async def get_skip_events():
     return {"events": list(skip_events)}
+
+
+@router.get("/clients")
+async def get_client_capabilities():
+    """Return every known Plex client and whether Cleanplex can control it.
+
+    Merges the Companion registry (which cannot include browser players) with the
+    active sessions, so a client that is playing but not controllable — Plex Web —
+    is listed with the reason instead of silently failing to skip.
+    """
+    try:
+        client = plex_mod.get_client()
+    except RuntimeError:
+        return {"known": False, "clients": [], "error": "Plex not configured"}
+
+    registry = await client.get_clients()
+    sessions = await client.get_active_sessions()
+    sessions_by_id = {s.client_identifier: s for s in sessions if s.client_identifier}
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for info in registry or []:
+        session = sessions_by_id.get(info.machine_identifier)
+        entries.append({
+            "machine_identifier": info.machine_identifier,
+            "title": info.title,
+            "product": info.product,
+            "device": info.device,
+            "capabilities": list(info.capabilities),
+            "controllable": info.controllable,
+            "active": session is not None,
+            "note": "" if info.controllable else "This client does not advertise playback control.",
+        })
+        seen.add(info.machine_identifier)
+
+    for session in sessions:
+        if session.client_identifier in seen:
+            continue
+        entries.append({
+            "machine_identifier": session.client_identifier,
+            "title": session.client_title,
+            "product": session.client_product,
+            "device": session.client_title,
+            "capabilities": [c for c in session.capabilities.split(",") if c],
+            "controllable": session.is_controllable,
+            "active": True,
+            "note": session.control_note,
+        })
+
+    return {
+        "known": registry is not None,
+        "clients": entries,
+        "last_control_error": client.last_control_error,
+    }
 
 
 @router.get("/scanner-status")

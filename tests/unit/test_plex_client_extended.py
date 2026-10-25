@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from cleanplex.plex_client import PlexClient, ActiveSession, LibrarySection, MediaItem, PlexUser
+from cleanplex.plex_client import (
+    PlexClient, ActiveSession, LibrarySection, MediaItem, PlexUser, PlexClientInfo,
+)
 
 
 def _make_client(seek_transport=None) -> PlexClient:
@@ -120,7 +122,12 @@ async def test_get_active_sessions_parses_method_valued_attributes():
             return srv
         return srv.sessions()
 
-    with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
+    with patch.object(
+        c, "get_clients",
+        new=AsyncMock(return_value=[
+            PlexClientInfo("client-1", "Plex Web", "Plex Web", "Firefox", ("playback", "timeline"))
+        ]),
+    ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
         sessions = await c.get_active_sessions()
 
     assert len(sessions) == 1
@@ -129,7 +136,50 @@ async def test_get_active_sessions_parses_method_valued_attributes():
     assert parsed.audio_language == "eng"
     assert parsed.client_identifier == "client-1"
     assert parsed.plex_guid == "plex://movie/abc"
+    assert parsed.is_controllable is True
+    assert parsed.control_note == ""
     assert c.last_session_error == ""
+
+
+async def test_get_active_sessions_marks_browser_players_uncontrollable():
+    """Plex Web rejects remote commands; the UI must not claim it is controllable."""
+    c = _make_client()
+    session = _fake_session()
+    srv = _mock_server()
+    srv.sessions = MagicMock(return_value=[session])
+
+    async def fake_to_thread(func, *args, **kwargs):
+        if func == c._get_server:
+            return srv
+        return srv.sessions()
+
+    with patch.object(
+        c, "get_clients", new=AsyncMock(return_value=[])
+    ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
+        sessions = await c.get_active_sessions()
+
+    assert sessions[0].is_controllable is False
+    assert "Plex Web" in sessions[0].control_note
+
+
+async def test_get_active_sessions_falls_back_when_capability_registry_fails():
+    c = _make_client()
+    session = _fake_session()
+    srv = _mock_server()
+    srv.sessions = MagicMock(return_value=[session])
+
+    async def fake_to_thread(func, *args, **kwargs):
+        if func == c._get_server:
+            return srv
+        return srv.sessions()
+
+    with patch.object(
+        c, "get_clients", new=AsyncMock(return_value=None)
+    ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
+        sessions = await c.get_active_sessions()
+
+    assert sessions[0].is_controllable is True  # old heuristic: player reports state
+    assert "lookup failed" in sessions[0].control_note
 
 
 async def test_get_active_sessions_tolerates_missing_players_and_media():
@@ -143,12 +193,53 @@ async def test_get_active_sessions_tolerates_missing_players_and_media():
             return srv
         return srv.sessions()
 
-    with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
+    with patch.object(
+        c, "get_clients", new=AsyncMock(return_value=[])
+    ), patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
         sessions = await c.get_active_sessions()
 
     assert len(sessions) == 1
     assert sessions[0].client_title == "Unknown"
     assert sessions[0].audio_language == ""
+
+
+async def test_get_clients_parses_the_registry():
+    c = _make_client()
+
+    def handler(request):
+        return httpx.Response(200, json={"MediaContainer": {"Device": [
+            {"machineIdentifier": "tv-1", "title": "Living Room",
+             "product": "Plex for Android", "device": "Nvidia Shield",
+             "protocolCapabilities": "playback,timeline,navigation"},
+            {"machineIdentifier": "web-1", "title": "Firefox",
+             "product": "Plex Web", "device": "PC",
+             "protocolCapabilities": "timeline"},
+        ]}})
+
+    c._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    clients = await c.get_clients()
+
+    assert clients is not None
+    by_id = {client.machine_identifier: client for client in clients}
+    assert by_id["tv-1"].controllable is True
+    assert by_id["web-1"].controllable is False
+
+
+async def test_get_clients_returns_none_when_unreadable():
+    c = _make_client()
+    c._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(500))
+    )
+
+    assert await c.get_clients() is None
+
+
+async def test_command_ids_are_monotonic_and_unique():
+    c = _make_client()
+    first = c._next_command_id()
+    second = c._next_command_id()
+
+    assert second == first + 1
 
 
 # ── seek ──────────────────────────────────────────────────────────────────────

@@ -130,6 +130,7 @@ async def plex_diagnostics():
             for s in sessions
         ],
         "last_session_error": client.last_session_error,
+        "last_control_error": client.last_control_error,
     }
 
 

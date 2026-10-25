@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import { Monitor, SkipForward, Clock, Wifi, WifiOff, ChevronDown, ChevronRight, Film, Tv, Zap, ShieldCheck } from 'lucide-react'
+import { Monitor, SkipForward, Clock, Wifi, WifiOff, ChevronDown, ChevronRight, Film, Tv, Zap, ShieldCheck, AlertTriangle } from 'lucide-react'
 
 interface Session {
   session_key: string
@@ -12,6 +12,7 @@ interface Session {
   client: string
   is_controllable: boolean
   filtering_enabled: boolean
+  control_note?: string
   thumb_url: string
 }
 
@@ -21,6 +22,17 @@ interface SkipEvent {
   title: string
   position_ms: number
   client: string
+}
+
+interface PlexClientEntry {
+  machine_identifier: string
+  title: string
+  product: string
+  device: string
+  capabilities: string[]
+  controllable: boolean
+  active: boolean
+  note: string
 }
 
 interface QueueItem {
@@ -65,6 +77,9 @@ export default function Dashboard() {
   const [skipLoadingKey, setSkipLoadingKey] = useState<string | null>(null)
   const [skipScanLoadingGuid, setSkipScanLoadingGuid] = useState<string | null>(null)
   const [queueExpanded, setQueueExpanded] = useState(false)
+  const [clients, setClients] = useState<PlexClientEntry[]>([])
+  const [clientsKnown, setClientsKnown] = useState(true)
+  const [lastControlError, setLastControlError] = useState('')
 
   // refresh is called ad-hoc by skipNow/skipCurrentScan — reuses the same fetch logic
   // without a signal since it's a one-shot, user-triggered call.
@@ -113,6 +128,36 @@ export default function Dashboard() {
 
     tick()
     const id = setInterval(tick, 5000)
+    return () => {
+      clearInterval(id)
+      controller.abort()
+    }
+  }, [])
+
+  // Client capabilities change rarely (a player appears/disappears); refreshing every
+  // minute is enough and keeps the extra Plex /clients lookup off the fast poll.
+  useEffect(() => {
+    let controller = new AbortController()
+
+    const load = async () => {
+      controller.abort()
+      controller = new AbortController()
+      try {
+        const d = await api.get<{
+          known: boolean
+          clients: PlexClientEntry[]
+          last_control_error?: string
+        }>('/api/sessions/clients', { signal: controller.signal })
+        setClients(d.clients ?? [])
+        setClientsKnown(d.known !== false)
+        setLastControlError(d.last_control_error ?? '')
+      } catch {
+        // Abort or Plex offline — keep the last known list.
+      }
+    }
+
+    load()
+    const id = setInterval(load, 60_000)
     return () => {
       clearInterval(id)
       controller.abort()
@@ -363,6 +408,12 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <p className="text-sm text-gray-400 mt-1">{s.user} · {s.client}</p>
+                  {s.control_note && (
+                    <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-400">
+                      <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                      {s.control_note}
+                    </p>
+                  )}
                   <div className="mt-2">
                     <div className="flex justify-between text-xs text-gray-500 mb-1">
                       <span>{msToTime(s.position_ms)}</span>
@@ -391,6 +442,61 @@ export default function Dashboard() {
           </div>
         )}
       </section>
+
+      {/* Client control capabilities */}
+      {clients.length > 0 && (
+        <section>
+          <h2 className="text-lg font-semibold text-gray-200 mb-3 flex items-center gap-2">
+            <Wifi size={18} className="text-plex-orange" />
+            Plex Clients
+            {!clientsKnown && (
+              <span className="text-xs font-normal text-amber-400">
+                capability lookup unavailable
+              </span>
+            )}
+          </h2>
+          <div className="bg-plex-card border border-plex-border rounded-xl divide-y divide-plex-border">
+            {clients.map(client => (
+              <div key={client.machine_identifier || client.title} className="px-4 py-3 flex items-start gap-3 text-sm">
+                <div className="flex-1 min-w-0">
+                  <p className="text-gray-200 truncate">
+                    {client.product || client.title}
+                    {client.active && (
+                      <span className="ml-2 text-[10px] uppercase tracking-wide text-plex-orange">
+                        playing
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-xs text-gray-500 truncate">
+                    {[client.title, client.device].filter(Boolean).join(' · ')}
+                    {client.capabilities.length > 0 && ` · ${client.capabilities.join(', ')}`}
+                  </p>
+                  {client.note && (
+                    <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-400">
+                      <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                      {client.note}
+                    </p>
+                  )}
+                </div>
+                {client.controllable ? (
+                  <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full flex-shrink-0">
+                    <Wifi size={11} /> Controllable
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-xs text-gray-400 bg-white/5 px-2 py-0.5 rounded-full flex-shrink-0">
+                    <WifiOff size={11} /> Not controllable
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+          {lastControlError && (
+            <p className="mt-2 text-xs text-amber-400 break-all">
+              Last control error: {lastControlError}
+            </p>
+          )}
+        </section>
+      )}
 
       {/* Recent skip events */}
       <section>

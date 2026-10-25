@@ -380,6 +380,7 @@ only. Those categories are populated by importing skip files, where humans have 
 
 #### Dashboard
 - **Active streams** — Shows all users currently watching, with playback position and controllability status
+- **Plex clients** — Every discovered client with its advertised capabilities and whether Cleanplex can control it (Plex Web is shown as not controllable, with the reason)
 - **Scanner status** — Number of workers active, queue size, and which titles are currently being scanned
 - **Recent skip events** — Log of the last 50 skips with timestamp, title, user, and client
 
@@ -485,6 +486,14 @@ Titles can be marked as **ignored** to skip them during background scans:
   service account can read the files and that the paths in Plex match the host.
 - The Analytics page's **NudeNet Detections** section shows the failed count and the
   last scanner error, so this is visible without reading logs.
+
+**Segments are detected but nothing is skipped?**
+- Check the client. **Plex Web (a browser tab) cannot be controlled remotely** — it
+  accepts the API request and ignores it, so Cleanplex now labels it "Not controllable"
+  and explains why on the Dashboard. Play through a Plex app on a TV, phone or tablet
+  (Companion-capable) for skipping to work.
+- Settings → Plex diagnostics shows `last_control_error` when a command was attempted
+  and rejected; the Dashboard's recent skip events record `success: 0` for those.
 
 **Posters not loading on remote devices?**
 - The app automatically proxies all Plex images to work around localhost URL issues. Try hard-refreshing the browser (Ctrl+F5).

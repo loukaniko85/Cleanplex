@@ -71,6 +71,13 @@ class ActiveSession:
     # ISO code of the audio track being played, empty when it cannot be determined.
     # Language-specific segments (profanity mutes) only apply to their own track.
     audio_language: str = ""
+    # Human-readable reason a session cannot be controlled (e.g. Plex Web has no
+    # remote-control endpoint). Empty when control is supported or not yet known.
+    control_note: str = ""
+    # Client product/device names and advertised protocol capabilities, for the
+    # Dashboard's client-capability display and diagnostics.
+    client_product: str = ""
+    capabilities: str = ""
 
 
 @dataclass
@@ -78,6 +85,21 @@ class LibrarySection:
     section_id: str
     title: str
     section_type: str     # "movie" or "show"
+
+
+@dataclass(frozen=True)
+class PlexClientInfo:
+    """A Companion-capable client reported by Plex's /clients registry."""
+
+    machine_identifier: str
+    title: str
+    product: str
+    device: str
+    capabilities: tuple[str, ...]
+
+    @property
+    def controllable(self) -> bool:
+        return "playback" in self.capabilities
 
 
 @dataclass
@@ -146,6 +168,12 @@ class PlexClient:
         # Most recent /status/sessions failure, surfaced by the API so the UI
         # can distinguish "Plex unreachable" from "nothing is playing".
         self.last_session_error = ""
+        # Most recent player-command failure (proxy/direct), surfaced by
+        # /api/settings/plex-diagnostics so "controllable" that is not is visible.
+        self.last_control_error = ""
+        # Monotonic command ids: two commands in the same second must not share an
+        # id or some clients silently ignore the second one (200, no action).
+        self._command_id = int(time.time() * 1000)
         # {rating_key: (monotonic_timestamp, (show_guid, show_title, show_thumb, show_rating_key, season_rating_key))}
         self._show_art_cache: dict[str, tuple[float, tuple[str, str, str, str, str]]] = {}
         # {client_identifier: {"transport": "proxy"|"direct", "port": int, "variant": int}}
@@ -203,6 +231,11 @@ class PlexClient:
             return []
 
         self.last_session_error = ""
+        # Plex Companion clients advertise their capabilities at /clients. Plex Web
+        # (a browser player) does not, and silently rejects remote commands; asking
+        # the registry is the only reliable way to tell the UI the truth.
+        clients = await self.get_clients() if sessions else []
+        registry = {c.machine_identifier: c for c in clients} if clients is not None else None
         result = []
         parse_failures = 0
         first_parse_error = ""
@@ -221,7 +254,28 @@ class PlexClient:
                 player = players[0] if players else None
                 client_id = player.machineIdentifier if player else ""
                 client_title = player.title if player else "Unknown"
-                controllable = bool(player and player.state is not None) if player else False
+                # A stateful player is not necessarily controllable: Plex Web plays
+                # in a browser and has no remote-control endpoint. Trust the
+                # Companion registry when it is available.
+                info = registry.get(client_id) if registry is not None else None
+                client_product = info.product if info else ""
+                capabilities = ",".join(info.capabilities) if info else ""
+                control_note = ""
+                if registry is not None and info is None:
+                    controllable = False
+                    control_note = (
+                        "This client does not accept remote commands (Plex Web and browser "
+                        "players cannot be controlled). Use a Plex app on a TV, phone or tablet."
+                    )
+                elif info is not None:
+                    controllable = info.controllable
+                    if not controllable:
+                        control_note = "This client does not advertise playback control."
+                else:
+                    controllable = bool(player and player.state is not None) if player else False
+                    control_note = (
+                        "Client capability lookup failed — skipping may not work on this client."
+                    )
                 client_address = getattr(player, "address", "") if player else ""
                 client_port_raw = getattr(player, "port", 32500) if player else 32500
                 try:
@@ -287,6 +341,9 @@ class PlexClient:
                         library_section_id=section_id,
                         volume=volume,
                         audio_language=audio_language,
+                        control_note=control_note,
+                        client_product=client_product,
+                        capabilities=capabilities,
                     )
                 )
             except Exception as exc:
@@ -301,6 +358,55 @@ class PlexClient:
                 f"{first_parse_error}"
             )
         return result
+
+    async def get_clients(self) -> list[PlexClientInfo] | None:
+        """Return Companion-capable clients from Plex's /clients registry.
+
+        Returns None when the registry cannot be read, so callers can distinguish
+        "no controllable clients" from "capability lookup failed".
+        """
+        try:
+            response = await asyncio.wait_for(
+                self._http.get(
+                    f"{self.url}/clients",
+                    params={"X-Plex-Token": self.token},
+                    headers={"Accept": "application/json"},
+                ),
+                timeout=3,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            devices = (payload.get("MediaContainer") or {}).get("Device") or []
+            clients: list[PlexClientInfo] = []
+            for device in devices:
+                machine_id = str(device.get("machineIdentifier") or "")
+                if not machine_id:
+                    continue
+                capabilities = tuple(sorted({
+                    part.strip()
+                    for part in str(device.get("protocolCapabilities") or "").split(",")
+                    if part.strip()
+                }))
+                clients.append(
+                    PlexClientInfo(
+                        machine_identifier=machine_id,
+                        title=str(device.get("title") or device.get("name") or "Unknown"),
+                        product=str(device.get("product") or ""),
+                        device=str(device.get("device") or device.get("model") or ""),
+                        capabilities=capabilities,
+                    )
+                )
+            return clients
+        except Exception as exc:
+            logger.info("Could not read Plex client capabilities: %s", exc)
+            return None
+
+    async def _remote_controllable_clients(self) -> dict[str, set[str]] | None:
+        """Return machineIdentifier → protocol capabilities, or None if unknown."""
+        clients = await self.get_clients()
+        if clients is None:
+            return None
+        return {client.machine_identifier: set(client.capabilities) for client in clients}
 
     # ── Player commands ───────────────────────────────────────────────────────
 
@@ -346,6 +452,10 @@ class PlexClient:
     # per client rather than rediscovered on each command — see _send_command.
     _FALLBACK_PORTS = (32500, 3005)
 
+    def _next_command_id(self) -> int:
+        self._command_id += 1
+        return self._command_id
+
     def _direct_variants(self, base: str, client_identifier: str) -> list[tuple[str, dict]]:
         """Return (url, headers) pairs to try when the server proxy will not relay."""
         full_headers = {
@@ -354,6 +464,7 @@ class PlexClient:
             "X-Plex-Product": "Cleanplex",
             "X-Plex-Device-Name": "Cleanplex",
             "X-Plex-Platform": "Windows",
+            "X-Plex-Provides": "controller",
         }
         return [
             (f"{base}&X-Plex-Token={self.token}", {"X-Plex-Target-Client-Identifier": client_identifier}),
@@ -366,10 +477,18 @@ class PlexClient:
         """Relay a player command through the server. Works for most modern clients."""
         try:
             srv = await asyncio.to_thread(self._get_server)
-            headers = {"X-Plex-Target-Client-Identifier": client_identifier}
+            headers = {
+                "X-Plex-Target-Client-Identifier": client_identifier,
+                # Identify the controller as well: some clients only action proxied
+                # commands that carry a controller identifier.
+                "X-Plex-Client-Identifier": "cleanplex-server",
+                "X-Plex-Provides": "controller",
+            }
             await asyncio.to_thread(srv.query, path, headers=headers)
+            self.last_control_error = ""
             return True
         except Exception as exc:
+            self.last_control_error = str(exc)[:400]
             logger.warning("Proxy %s failed for %s: %s", path.split("?")[0], client_identifier, exc)
             return False
 
@@ -385,12 +504,17 @@ class PlexClient:
         try:
             resp = await self._http.get(url, headers=headers)
             if resp.status_code < 300:
+                self.last_control_error = ""
                 return True
+            self.last_control_error = (
+                f"HTTP {resp.status_code} from {address}:{port}: {resp.text[:300]}"
+            )
             logger.warning(
                 "Direct command HTTP %d for client %s at %s:%d (variant=%d, body=%s)",
                 resp.status_code, client_identifier, address, port, variant + 1, resp.text[:500],
             )
         except Exception as exc:
+            self.last_control_error = str(exc)[:400]
             logger.warning(
                 "Direct command failed for client %s at %s:%d (variant=%d): %s",
                 client_identifier, address, port, variant + 1, exc,
@@ -455,7 +579,7 @@ class PlexClient:
         """Seek the given client to offset_ms. Returns True if a command was accepted."""
         path = (
             f"/player/playback/seekTo?offset={offset_ms}&type=video"
-            f"&commandID={int(time.time())}"
+            f"&commandID={self._next_command_id()}"
         )
         success = await self._send_command(path, client_identifier, client_address, client_port)
         if success:
@@ -467,7 +591,7 @@ class PlexClient:
         level = max(0, min(100, int(level)))
         path = (
             f"/player/playback/setParameters?volume={level}&type=video"
-            f"&commandID={int(time.time())}"
+            f"&commandID={self._next_command_id()}"
         )
         success = await self._send_command(path, client_identifier, client_address, client_port)
         if success:
