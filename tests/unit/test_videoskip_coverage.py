@@ -119,6 +119,28 @@ async def test_scan_coverage_ignores_ignored_titles(setup_db):
     assert coverage["libraries"][0]["total"] == 1
 
 
+async def test_library_summaries_are_derived_from_scan_jobs(setup_db):
+    """The Library page must stay usable when Plex is unreachable."""
+    await _job("movie")
+    await db.upsert_scan_job(
+        plex_guid="ep",
+        title="Show S1E1",
+        file_path="/tv/ep.mkv",
+        rating_key="2",
+        library_id="2",
+        library_title="TV",
+        media_type="episode",
+    )
+
+    libraries = await db.get_library_summaries()
+
+    by_id = {lib["id"]: lib for lib in libraries}
+    assert by_id["1"]["title"] == "Movies"
+    assert by_id["1"]["type"] == "movie"
+    assert by_id["2"]["type"] == "show"
+    assert by_id["1"]["total"] == 1
+
+
 async def test_scan_coverage_reports_failed_scans_and_last_error(setup_db):
     """0 scanned + 0 NudeNet must not hide the reason: show failed/pending."""
     await _job("ok")
