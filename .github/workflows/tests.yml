@@ -73,3 +73,45 @@ jobs:
       - name: Stop container
         if: always()
         run: docker rm -f cleanplex-ci || true
+
+  e2e:
+    # Browser tests against the real app: seeded SQLite database, built React
+    # bundle, Chromium. Catches startup/UI failures that unit tests miss.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            e2e/package-lock.json
+      - name: Install backend
+        run: pip install -e .
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+      - name: Install Playwright
+        run: |
+          cd e2e
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run browser tests
+        env:
+          PYTHON: python
+        run: |
+          cd e2e
+          npx playwright test
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report
+          retention-days: 7

@@ -14,6 +14,12 @@ venv/
 frontend/node_modules/
 frontend/dist/
 
+# Playwright end-to-end suite artifacts
+e2e/node_modules/
+e2e/.data/
+e2e/test-results/
+e2e/playwright-report/
+
 # Thumbnails and runtime data
 ~/.cleanplex/
 
