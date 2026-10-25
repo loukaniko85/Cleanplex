@@ -1309,6 +1309,10 @@ async def get_scan_coverage() -> dict:
     and Exchange coverage side by side. "scanned" counts titles the scanner has
     finished; "with_nudenet" counts titles that own at least one NudeNet-produced
     segment, which is the number that actually means "filtered by ML".
+
+    Failure counts are included because a library that never scans is otherwise
+    indistinguishable from one that scans and finds nothing: 24k failed jobs used
+    to leave the panel showing a wall of optimistic zeros.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
@@ -1318,6 +1322,9 @@ async def get_scan_coverage() -> dict:
                 COALESCE(NULLIF(j.library_title, ''), 'Unknown') AS library_title,
                 COUNT(*) AS total,
                 SUM(CASE WHEN j.status = 'done' THEN 1 ELSE 0 END) AS scanned,
+                SUM(CASE WHEN j.status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN j.status = 'scanning' THEN 1 ELSE 0 END) AS scanning,
+                SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) AS failed,
                 SUM(CASE WHEN EXISTS (
                     SELECT 1 FROM segments s WHERE s.plex_guid = j.plex_guid
                 ) THEN 1 ELSE 0 END) AS with_segments,
@@ -1332,10 +1339,18 @@ async def get_scan_coverage() -> dict:
             ORDER BY library_title COLLATE NOCASE
             """
         )
+        last_error_row = await (await conn.execute(
+            "SELECT title, error_msg, finished_at FROM scan_jobs "
+            "WHERE status = 'failed' AND COALESCE(error_msg, '') != '' "
+            "ORDER BY finished_at DESC LIMIT 1"
+        )).fetchone()
 
     totals = {
         "total": 0,
         "scanned": 0,
+        "pending": 0,
+        "scanning": 0,
+        "failed": 0,
         "with_segments": 0,
         "with_nudenet": 0,
         "without_segments": 0,
@@ -1351,6 +1366,9 @@ async def get_scan_coverage() -> dict:
             "library_title": row["library_title"],
             "total": count,
             "scanned": int(row["scanned"] or 0),
+            "pending": int(row["pending"] or 0),
+            "scanning": int(row["scanning"] or 0),
+            "failed": int(row["failed"] or 0),
             "with_segments": with_segments,
             "with_nudenet": with_nudenet,
             "without_segments": count - with_segments,
@@ -1359,7 +1377,82 @@ async def get_scan_coverage() -> dict:
         libraries.append(entry)
         for key in totals:
             totals[key] += entry[key]
+    totals["last_error"] = (
+        {
+            "title": last_error_row["title"],
+            "error": last_error_row["error_msg"],
+            "at": last_error_row["finished_at"],
+        }
+        if last_error_row
+        else None
+    )
     return {**totals, "libraries": libraries}
+
+
+async def get_nudenet_analytics() -> dict:
+    """Return detection statistics for NudeNet-produced segments only.
+
+    Imported files describe what a human graded; this reports what the local
+    detector actually found. Labels are split from the comma-separated
+    `segments.labels` tokens and include the average detector confidence and the
+    total span per label.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT s.labels, s.confidence, s.start_ms, s.end_ms
+            FROM segments s
+            WHERE (s.source = 'scanner' OR s.sources LIKE '%scanner%')
+              AND s.labels IS NOT NULL AND s.labels != ''
+            """
+        )
+
+    labels: dict[str, dict] = {}
+    for row in rows:
+        span = max(0, int(row["end_ms"] or 0) - int(row["start_ms"] or 0))
+        for token in (row["labels"] or "").split(","):
+            token = token.strip()
+            if not token:
+                continue
+            entry = labels.setdefault(
+                token, {"label": token, "count": 0, "confidence_sum": 0.0, "duration_ms": 0}
+            )
+            entry["count"] += 1
+            entry["confidence_sum"] += float(row["confidence"] or 0)
+            entry["duration_ms"] += span
+
+    result = []
+    for entry in labels.values():
+        result.append({
+            "label": entry["label"],
+            "count": entry["count"],
+            "avg_confidence": round(entry["confidence_sum"] / entry["count"], 3)
+            if entry["count"]
+            else 0.0,
+            "duration_ms": entry["duration_ms"],
+        })
+    result.sort(key=lambda item: (-item["count"], item["label"]))
+    return {
+        "segments": len(rows),
+        "labels": result,
+        "coverage": await get_scan_coverage(),
+    }
+
+
+async def reset_failed_scan_jobs() -> int:
+    """Move failed scan jobs back to pending so they can be retried.
+
+    A deployment fix (e.g. mounting the media paths the container could not see)
+    must not require rescanning each title by hand: 24k failed rows is a wall of
+    manual work otherwise.
+    """
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE scan_jobs SET status='pending', progress=0, error_msg=NULL "
+            "WHERE status='failed'"
+        )
+        await conn.commit()
+        return cursor.rowcount
 
 
 async def get_guids_missing_segments(

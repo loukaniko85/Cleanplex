@@ -109,6 +109,31 @@ The UI is on `http://localhost:7979`. Everything persistent lives under **`/data
 | `/data/thumbnails/` | Segment preview thumbnails |
 | `/data/models/` | Downloaded NudeNet 640m model |
 
+### Media mounts (required for local scanning)
+
+The skip/skip-and-mute engine needs no media access — it only sends seek/mute
+commands to Plex clients. **Local NudeNet scanning does**: the scanner runs ffmpeg
+on the media file, so the file must exist inside the container at the exact path
+Plex reports.
+
+Find those paths in Plex (item → ⋯ → **Get Info** → **View XML** → `Part file="/..."`)
+and mount each prefix read-only:
+
+```bash
+docker run -d --name cleanplex \
+  -p 7979:7979 \
+  -v cleanplex-data:/data \
+  -v /mnt/user/media/tv:/tv:ro \
+  -v /mnt/user/media/movies:/movies:ro \
+  --restart unless-stopped \
+  ghcr.io/loukaniko85/cleanplex:latest
+```
+
+If the paths do not match, every scan fails with `File not found: /tv/...` and the
+NudeNet coverage panel stays at zero. The panel and the Analytics page now show
+that failure count and the last error; after fixing the mounts, use **Settings →
+Local scanning → Retry failed scans** instead of rescanning by hand.
+
 Map exactly one host folder (or named volume) to `/data`. **Do not map
 `/home/cleanplex`** — that is only the container user's home directory and is not
 used for configuration.
@@ -431,6 +456,14 @@ Titles can be marked as **ignored** to skip them during background scans:
 | `CLEANPLEX_WEBHOOK_TOKEN` | unset | Optional shared secret for `/api/webhooks/plex?token=...` |
 
 ## Troubleshooting
+
+**NudeNet coverage stays at zero / every scan says "File not found"?**
+- The Cleanplex process cannot see the media. In Docker, mount the media at the same
+  absolute paths Plex reports (`-v /mnt/user/media/tv:/tv:ro`), then use
+  **Settings → Local scanning → Retry failed scans**. Outside Docker, check that the
+  service account can read the files and that the paths in Plex match the host.
+- The Analytics page's **NudeNet Detections** section shows the failed count and the
+  last scanner error, so this is visible without reading logs.
 
 **Posters not loading on remote devices?**
 - The app automatically proxies all Plex images to work around localhost URL issues. Try hard-refreshing the browser (Ctrl+F5).

@@ -172,6 +172,20 @@ async def scan_coverage():
     return await db.get_scan_coverage()
 
 
+@router.post("/retry-failed")
+async def retry_failed_scans():
+    """Move every failed scan job back to pending and enqueue it.
+
+    Typical use: the container could not see the media paths, every scan failed
+    with 'File not found', and after fixing the mounts the user should not have
+    to rescan thousands of titles by hand.
+    """
+    requeued = await db.reset_failed_scan_jobs()
+    if requeued:
+        await scan_mod.enqueue_pending()
+    return {"ok": True, "requeued": requeued}
+
+
 @router.post("/resume")
 async def resume_scanner():
     scan_mod.resume_scanner()

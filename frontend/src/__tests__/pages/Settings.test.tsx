@@ -64,6 +64,37 @@ const coverage = {
   ],
 }
 
+const scanCoverage = {
+  total: 10,
+  scanned: 2,
+  pending: 5,
+  scanning: 0,
+  failed: 3,
+  with_segments: 2,
+  with_nudenet: 2,
+  without_segments: 8,
+  without_nudenet: 8,
+  last_error: {
+    title: 'Treasure Island – S1E3',
+    error: 'File not found: /tv/Treasure Island/x.mkv',
+    at: '2026-10-25 17:00:00',
+  },
+  libraries: [
+    {
+      library_id: '1',
+      library_title: 'Movies',
+      total: 10,
+      scanned: 2,
+      pending: 5,
+      failed: 3,
+      with_segments: 2,
+      with_nudenet: 2,
+      without_segments: 8,
+      without_nudenet: 8,
+    },
+  ],
+}
+
 const webhookStatus = {
   total: 1,
   last_received_at: '2026-10-24 06:00:00',
@@ -114,6 +145,7 @@ beforeEach(() => {
     // detector-labels is checked first: it also contains 'settings' in its path.
     if (path.includes('detector-labels')) return Promise.resolve({ labels: [] })
     if (path.includes('videoskip/coverage')) return Promise.resolve(coverage)
+    if (path.includes('scan/coverage')) return Promise.resolve(scanCoverage)
     if (path.includes('videoskip/queue')) return Promise.resolve(queueStatus)
     if (path.includes('webhooks/plex/status')) return Promise.resolve(webhookStatus)
     // /api/settings returns the settings object flat, not wrapped.
@@ -149,7 +181,8 @@ describe('Settings', () => {
     renderSettings()
     await waitFor(() => expect(screen.getByText('VideoSkip Exchange')).toBeInTheDocument())
     expect(screen.getByText('From VideoSkip')).toBeInTheDocument()
-    expect(screen.getByText('Movies')).toBeInTheDocument()
+    // Two coverage tables now render "Movies" (NudeNet + VideoSkip).
+    expect(screen.getAllByText('Movies').length).toBeGreaterThan(0)
     expect(screen.getByText('9/50 today')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Queue missing \(50\)/ }))
@@ -158,5 +191,20 @@ describe('Settings', () => {
       expect(mockApi.post).toHaveBeenCalledWith('/api/videoskip/queue/enqueue', { limit: 50 }),
     )
     expect(await screen.findByText(/Queued 2 of 6/)).toBeInTheDocument()
+  })
+
+  it('surfaces failed NudeNet scans and retries them', async () => {
+    mockApi.post.mockResolvedValue({ requeued: 3 })
+
+    renderSettings()
+    await waitFor(() => expect(screen.getByText(/3 failed/)).toBeInTheDocument())
+    expect(screen.getByText(/File not found/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed scans/ }))
+
+    await waitFor(() =>
+      expect(mockApi.post).toHaveBeenCalledWith('/api/scan/retry-failed'),
+    )
+    expect(await screen.findByText(/Requeued 3 failed scan/)).toBeInTheDocument()
   })
 })

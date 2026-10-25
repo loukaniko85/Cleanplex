@@ -202,3 +202,40 @@ async def test_scan_coverage_returns_totals_and_libraries(http_client):
     assert body["with_nudenet"] == 1
     assert body["without_nudenet"] == 1
     assert body["libraries"][0]["library_title"] == "Movies"
+
+
+async def test_retry_failed_scans_requeues_and_enqueues(http_client):
+    await _make_job("retry-a", library_id="lib1")
+    await db.update_scan_job_status("retry-a", "failed", error_msg="File not found")
+    await _make_job("keep-done", library_id="lib1")
+    await db.update_scan_job_status("keep-done", "done")
+
+    with patch(
+        "cleanplex.web.routes.scanner_routes.scan_mod.enqueue_pending", new=AsyncMock()
+    ) as mock_enqueue:
+        resp = await http_client.post("/api/scan/retry-failed")
+
+    assert resp.status_code == 200
+    assert resp.json()["requeued"] == 1
+    mock_enqueue.assert_awaited_once()
+    assert (await db.get_scan_job_by_guid("retry-a"))["status"] == "pending"
+
+
+async def test_nudenet_analytics_route_returns_labels_and_coverage(http_client):
+    await _make_job("nude-a")
+    await db.insert_segment(
+        plex_guid="nude-a",
+        title="nude-a",
+        start_ms=0,
+        end_ms=2000,
+        confidence=0.8,
+        labels="FEMALE_BREAST_EXPOSED",
+    )
+
+    resp = await http_client.get("/api/analytics/nudenet")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["segments"] == 1
+    assert body["labels"][0]["label"] == "FEMALE_BREAST_EXPOSED"
+    assert body["coverage"]["total"] == 1

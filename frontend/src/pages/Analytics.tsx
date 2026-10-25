@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import SkipAnalytics from '../components/SkipAnalytics'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -11,6 +12,29 @@ interface LabelCount {
 interface RatingCount {
   content_rating: string
   count: number
+}
+
+interface NudenetLabel {
+  label: string
+  count: number
+  avg_confidence: number
+  duration_ms: number
+}
+
+interface NudenetCoverage {
+  total: number
+  scanned: number
+  pending: number
+  scanning?: number
+  failed: number
+  with_nudenet: number
+  last_error: { title: string; error: string; at: string } | null
+}
+
+interface NudenetStats {
+  segments: number
+  labels: NudenetLabel[]
+  coverage: NudenetCoverage
 }
 
 interface Segment {
@@ -100,6 +124,10 @@ export default function Analytics() {
   const [labelCounts, setLabelCounts] = useState<LabelCount[]>([])
   const [loadingLabels, setLoadingLabels] = useState(true)
 
+  // Local NudeNet scan statistics (separate from imported labels)
+  const [nudenet, setNudenet] = useState<NudenetStats | null>(null)
+  const [loadingNudenet, setLoadingNudenet] = useState(true)
+
   // Drill-down: rating breakdown for a selected label
   const [drillLabel, setDrillLabel] = useState<string | null>(null)
   const [ratingCounts, setRatingCounts] = useState<RatingCount[]>([])
@@ -124,6 +152,14 @@ export default function Analytics() {
     api.get<{ labels: LabelCount[] }>('/api/analytics/labels')
       .then(d => setLabelCounts(d.labels))
       .finally(() => setLoadingLabels(false))
+  }, [])
+
+  // Load NudeNet statistics once on mount
+  useEffect(() => {
+    api.get<NudenetStats>('/api/analytics/nudenet')
+      .then(setNudenet)
+      .catch(() => setNudenet(null))
+      .finally(() => setLoadingNudenet(false))
   }, [])
 
   // Load drill-down when a bar is clicked
@@ -215,6 +251,7 @@ export default function Analytics() {
   }
 
   const maxLabelCount = labelCounts[0]?.count ?? 0
+  const maxNudenetCount = nudenet?.labels[0]?.count ?? 0
   const maxRatingCount = ratingCounts[0]?.count ?? 0
   const totalPages = Math.ceil(totalSegments / PAGE_SIZE)
 
@@ -224,6 +261,97 @@ export default function Analytics() {
         <BarChart2 size={22} className="text-plex-orange" />
         Analytics
       </h1>
+
+      {/* ── NudeNet local scan statistics ─────────────────────────────────── */}
+      <section className="bg-plex-card border border-plex-border rounded-xl p-4">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-1">
+          NudeNet Detections
+          <span className="ml-2 text-gray-600 normal-case font-normal">— local frame scan</span>
+        </h2>
+        <p className="text-xs text-gray-500 mb-4">
+          What the local detector found, separate from imported skip files. A title can be
+          scanned and clean; that is different from never having been scanned.
+        </p>
+
+        {loadingNudenet ? (
+          <p className="text-gray-500 text-sm">Loading…</p>
+        ) : !nudenet ? (
+          <p className="text-gray-600 text-sm">NudeNet statistics are unavailable.</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+              {[
+                { label: 'Titles', value: nudenet.coverage.total, tone: 'text-gray-100' },
+                { label: 'Scanned', value: nudenet.coverage.scanned, tone: 'text-green-400' },
+                { label: 'With detections', value: nudenet.coverage.with_nudenet, tone: 'text-blue-400' },
+                { label: 'Failed', value: nudenet.coverage.failed, tone: nudenet.coverage.failed ? 'text-red-400' : 'text-gray-400' },
+              ].map(card => (
+                <div key={card.label} className="bg-plex-darker border border-plex-border rounded-lg px-3 py-2">
+                  <p className="text-[11px] text-gray-500">{card.label}</p>
+                  <p className={`text-xl font-semibold ${card.tone}`}>{card.value}</p>
+                </div>
+              ))}
+            </div>
+
+            {nudenet.coverage.failed > 0 && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="font-medium">
+                    {nudenet.coverage.failed.toLocaleString()} scan(s) failed
+                    {nudenet.coverage.pending > 0 &&
+                      ` · ${nudenet.coverage.pending.toLocaleString()} pending`}
+                    .
+                  </p>
+                  {nudenet.coverage.last_error && (
+                    <p className="mt-0.5 text-amber-200/80 break-all">
+                      {nudenet.coverage.last_error.title}: {nudenet.coverage.last_error.error}
+                    </p>
+                  )}
+                  {nudenet.coverage.last_error?.error.toLowerCase().includes('file not found') && (
+                    <p className="mt-1 text-amber-200/80">
+                      Cleanplex cannot see these files. If it runs in a container, mount the media at
+                      the same paths Plex reports (read-only is fine), then{' '}
+                      <Link to="/settings" className="underline hover:text-amber-100">
+                        retry failed scans in Settings
+                      </Link>
+                      .
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {nudenet.coverage.scanned === 0 && nudenet.coverage.failed === 0 && (
+              <div className="mb-4 rounded-lg border border-plex-border bg-plex-darker px-3 py-2 text-xs text-gray-400">
+                No scans have completed yet
+                {nudenet.coverage.pending > 0
+                  ? ` — ${nudenet.coverage.pending.toLocaleString()} title(s) queued.`
+                  : '.'}{' '}
+                Scanning runs during the scan window configured in Settings.
+              </div>
+            )}
+
+            {nudenet.labels.length > 0 ? (
+              <BarChart
+                data={nudenet.labels.slice(0, 15).map(l => ({
+                  key: l.label,
+                  count: l.count,
+                  label: `${shortLabel(l.label)} · ${Math.round(l.avg_confidence * 100)}%`,
+                }))}
+                maxVal={maxNudenetCount}
+                selectedBar={drillLabel}
+                onBarClick={handleBarClick}
+                colorClass="bg-plex-orange"
+              />
+            ) : nudenet.coverage.scanned > 0 ? (
+              <p className="text-gray-600 text-sm">
+                {nudenet.coverage.scanned.toLocaleString()} title(s) scanned — no nudity detected yet.
+              </p>
+            ) : null}
+          </>
+        )}
+      </section>
 
       {/* ── Top chart: segments per label ─────────────────────────────────── */}
       <section className="bg-plex-card border border-plex-border rounded-xl p-4">

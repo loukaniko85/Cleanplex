@@ -6,9 +6,14 @@ services:
       - "7979:7979"
     volumes:
       - cleanplex-data:/data
-      # Read-only media mount if you want the optional NudeNet frame scanner.
-      # The skip/skip-and-mute engine works without it; only local scanning needs
-      # the file paths to be visible inside the container.
+      # REQUIRED for local (NudeNet) scanning: the container must see media at the
+      # SAME absolute paths Plex reports, or every scan fails with
+      # "File not found: /tv/...". Copy the paths from Plex (item → Get Info →
+      # View XML → Part file) and mount each prefix read-only, e.g.:
+      #   - /mnt/user/media/tv:/tv:ro
+      #   - /mnt/user/media/movies:/movies:ro
+      # The skip/skip-and-mute engine works without this; only local scanning
+      # needs the file paths to be visible inside the container.
       # - /path/to/media:/media:ro
     environment:
       - CLEANPLEX_DATA=/data

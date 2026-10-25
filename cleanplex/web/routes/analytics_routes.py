@@ -22,6 +22,17 @@ async def get_label_counts():
     return {"labels": data}
 
 
+@router.get("/nudenet")
+async def get_nudenet_analytics():
+    """Return local-scan coverage and NudeNet detection statistics.
+
+    Kept separate from /labels: the label chart mixes every source (VideoSkip,
+    pasted lists, subtitles), and users need to know what the local detector
+    itself found and whether scanning is healthy at all.
+    """
+    return await db.get_nudenet_analytics()
+
+
 @router.get("/labels/{label}/ratings")
 async def get_label_rating_counts(label: str):
     """Return segment counts for a specific label grouped by content rating."""

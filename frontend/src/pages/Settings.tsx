@@ -102,6 +102,9 @@ interface ScanLibraryCoverage {
   library_title: string
   total: number
   scanned: number
+  pending?: number
+  scanning?: number
+  failed?: number
   with_segments: number
   with_nudenet: number
   without_segments: number
@@ -111,10 +114,14 @@ interface ScanLibraryCoverage {
 interface ScanCoverage {
   total: number
   scanned: number
+  pending: number
+  scanning?: number
+  failed: number
   with_segments: number
   with_nudenet: number
   without_segments: number
   without_nudenet: number
+  last_error?: { title: string; error: string; at: string } | null
   libraries: ScanLibraryCoverage[]
 }
 
@@ -170,6 +177,8 @@ export default function SettingsPage() {
   const [coverage, setCoverage] = useState<VideoskipCoverage | null>(null)
   const [coverageLoading, setCoverageLoading] = useState(true)
   const [scanCoverage, setScanCoverage] = useState<ScanCoverage | null>(null)
+  const [scanRetrying, setScanRetrying] = useState(false)
+  const [scanMessage, setScanMessage] = useState<{ ok: boolean; message: string } | null>(null)
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [queueLoading, setQueueLoading] = useState(true)
   const [webhookStatus, setWebhookStatus] = useState<WebhookStatus | null>(null)
@@ -289,6 +298,20 @@ export default function SettingsPage() {
       setQueueMessage({ ok: false, message: 'Could not load coverage.' })
     } finally {
       setCoverageLoading(false)
+    }
+  }
+
+  const retryFailedScans = async () => {
+    setScanRetrying(true)
+    setScanMessage(null)
+    try {
+      const r = await api.post<{ requeued: number }>('/api/scan/retry-failed')
+      setScanMessage({ ok: true, message: `Requeued ${r.requeued} failed scan(s).` })
+      await refreshCoverage()
+    } catch {
+      setScanMessage({ ok: false, message: 'Could not requeue failed scans.' })
+    } finally {
+      setScanRetrying(false)
     }
   }
 
@@ -681,6 +704,40 @@ export default function SettingsPage() {
             </table>
           </div>
         ) : null}
+
+        {scanCoverage && (scanCoverage.failed > 0 || scanCoverage.pending > 0) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+            {scanCoverage.failed > 0 && (
+              <span className="text-red-400">{scanCoverage.failed.toLocaleString()} failed</span>
+            )}
+            {scanCoverage.pending > 0 && (
+              <span className="text-gray-400">{scanCoverage.pending.toLocaleString()} pending</span>
+            )}
+            {scanCoverage.last_error && (
+              <span
+                className="max-w-xl truncate text-gray-500"
+                title={`${scanCoverage.last_error.title}: ${scanCoverage.last_error.error}`}
+              >
+                Last error: {scanCoverage.last_error.error}
+              </span>
+            )}
+            {scanCoverage.failed > 0 && (
+              <button
+                onClick={retryFailedScans}
+                disabled={scanRetrying}
+                className="inline-flex items-center gap-1.5 rounded border border-plex-border bg-plex-darker px-2.5 py-1 text-gray-300 transition-colors hover:border-plex-orange/50 hover:text-plex-orange disabled:opacity-50"
+              >
+                <RotateCcw size={12} className={scanRetrying ? 'animate-spin' : ''} />
+                Retry failed scans
+              </button>
+            )}
+          </div>
+        )}
+        {scanMessage && (
+          <p className={`mt-2 text-xs ${scanMessage.ok ? 'text-green-400' : 'text-red-400'}`}>
+            {scanMessage.message}
+          </p>
+        )}
       </section>
 
       {/* VideoSkip Exchange coverage */}

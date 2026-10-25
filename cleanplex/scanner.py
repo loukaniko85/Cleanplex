@@ -211,11 +211,22 @@ async def enqueue_pending() -> None:
     jobs = await db.get_scan_jobs(status="pending")
     active = [j for j in jobs if is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
 
+    def _rating_key(job: dict) -> int:
+        """Numeric Plex rating key, or 0 for anything unexpected.
+
+        Sorting is cosmetic; a single non-numeric key used to raise ValueError
+        and take down the whole reorder/retry path.
+        """
+        try:
+            return int(job.get("rating_key") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     movies = [j for j in active if j.get("media_type") != "episode"]
     episodes = [j for j in active if j.get("media_type") == "episode"]
 
     # Movies: newest Plex item first.
-    movies.sort(key=lambda j: int(j.get("rating_key") or 0), reverse=True)
+    movies.sort(key=_rating_key, reverse=True)
 
     # TV: group episodes by show_guid; fall back to the show name portion of
     # the title ("ShowName – Season – Episode") when show_guid is absent.
@@ -228,13 +239,13 @@ async def enqueue_pending() -> None:
 
     # Within each show sort by rating_key asc (episode order).
     for bucket in show_buckets.values():
-        bucket.sort(key=lambda j: int(j.get("rating_key") or 0))
+        bucket.sort(key=_rating_key)
 
     # Order shows by the highest rating_key in each bucket desc
     # (most recently added show comes first).
     ordered_shows = sorted(
         show_buckets.values(),
-        key=lambda eps: max(int(j.get("rating_key") or 0) for j in eps),
+        key=lambda eps: max(_rating_key(j) for j in eps),
         reverse=True,
     )
 

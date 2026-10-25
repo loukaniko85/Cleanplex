@@ -117,3 +117,78 @@ async def test_scan_coverage_ignores_ignored_titles(setup_db):
 
     assert coverage["total"] == 1
     assert coverage["libraries"][0]["total"] == 1
+
+
+async def test_scan_coverage_reports_failed_scans_and_last_error(setup_db):
+    """0 scanned + 0 NudeNet must not hide the reason: show failed/pending."""
+    await _job("ok")
+    await db.update_scan_job_status("ok", "done", progress=1.0)
+    await _job("bad")
+    await db.update_scan_job_status(
+        "bad", "failed", error_msg="File not found: /tv/Show/x.mkv"
+    )
+
+    coverage = await db.get_scan_coverage()
+
+    assert coverage["scanned"] == 1
+    assert coverage["failed"] == 1
+    assert coverage["pending"] == 0
+    assert coverage["last_error"]["error"].startswith("File not found")
+    assert coverage["last_error"]["title"] == "bad"
+
+
+async def test_nudenet_analytics_counts_only_scanner_segments(setup_db):
+    await _job("scanned")
+    await db.insert_segment(
+        plex_guid="scanned",
+        title="scanned",
+        start_ms=1000,
+        end_ms=4001,
+        confidence=0.9,
+        labels="FEMALE_BREAST_EXPOSED,BUTTOCKS_EXPOSED",
+    )
+    await db.insert_segments_bulk(
+        "scanned",
+        "scanned",
+        [{"start_ms": 0, "end_ms": 1000, "category": "violence",
+          "labels": "violence skip 3", "action": "skip"}],
+        "videoskip:776",
+    )
+
+    stats = await db.get_nudenet_analytics()
+
+    assert stats["segments"] == 1
+    by_label = {item["label"]: item for item in stats["labels"]}
+    assert set(by_label) == {"FEMALE_BREAST_EXPOSED", "BUTTOCKS_EXPOSED"}
+    assert by_label["FEMALE_BREAST_EXPOSED"]["avg_confidence"] == 0.9
+    assert by_label["FEMALE_BREAST_EXPOSED"]["duration_ms"] == 3001
+    assert stats["coverage"]["total"] == 1
+
+
+async def test_nudenet_analytics_is_empty_without_scanner_segments(setup_db):
+    await _job("import-only")
+    await db.insert_segments_bulk(
+        "import-only",
+        "import-only",
+        [{"start_ms": 0, "end_ms": 1000, "category": "sex"}],
+        "videoskip:776",
+    )
+
+    stats = await db.get_nudenet_analytics()
+
+    assert stats["segments"] == 0
+    assert stats["labels"] == []
+
+
+async def test_reset_failed_scan_jobs_requeues_only_failures(setup_db):
+    await _job("ok")
+    await db.update_scan_job_status("ok", "done", progress=1.0)
+    await _job("bad")
+    await db.update_scan_job_status("bad", "failed", error_msg="File not found")
+
+    requeued = await db.reset_failed_scan_jobs()
+
+    assert requeued == 1
+    assert (await db.get_scan_job_by_guid("bad"))["status"] == "pending"
+    assert (await db.get_scan_job_by_guid("bad"))["error_msg"] in (None, "")
+    assert (await db.get_scan_job_by_guid("ok"))["status"] == "done"
