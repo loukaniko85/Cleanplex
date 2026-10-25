@@ -8,7 +8,7 @@ import pytest
 
 from cleanplex import importers
 from cleanplex.importers import edl, mcf, paste, skp
-from cleanplex.importers._common import ParseError, to_ms, to_timestamp
+from cleanplex.importers._common import ParseError, to_ms, to_timestamp, validate_segment
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -117,6 +117,58 @@ def test_skp_segments_are_time_ordered():
     assert [s["start_ms"] for s in segments] == [10000, 60000]
 
 
+def test_skp_keeps_valid_cues_when_one_range_is_inverted():
+    """Regression: GoT S2E6 on the Exchange contains 28:21.99 --> 26:52.19.
+
+    One authored typo used to raise out of parse() and discard the other 12
+    valid cues in the file.
+    """
+    text = (
+        "0:00:10 --> 0:00:20\nnudity 3\n\n"
+        "0:28:21.99 --> 0:26:52.19\nviolence 2\n\n"
+        "0:30:00 --> 0:30:10\nprofane word 1\n"
+    )
+    segments = skp.parse(text)
+
+    assert [s["start_ms"] for s in segments] == [10000, 1800000]
+    assert segments[0]["category"] == "nudity"
+
+
+def test_skp_missing_label_does_not_swallow_the_next_cue():
+    """A stray cue line must not be consumed as the previous cue's label.
+
+    That used to merge two cues into one segment whose category/severity were
+    invented from the timestamp digits.
+    """
+    text = "0:00:10 --> 0:00:20\n0:00:30 --> 0:00:40\nviolence 3\n"
+    segments = skp.parse(text)
+
+    assert len(segments) == 1
+    assert segments[0]["start_ms"] == 30000
+    assert segments[0]["category"] == "violence"
+
+
+def test_skp_blank_line_before_label_is_tolerated():
+    text = "0:00:10 --> 0:00:20\n\nviolence 3\n"
+
+    segments = skp.parse(text)
+
+    assert len(segments) == 1
+    assert segments[0]["labels"] == "violence 3"
+
+
+def test_skp_raises_when_every_cue_is_malformed():
+    text = "0:00:20 --> 0:00:10\nnudity 3\n\n0:00:40 --> 0:00:30\nviolence 3\n"
+
+    with pytest.raises(ParseError, match="No usable skip cues"):
+        skp.parse(text)
+
+
+def test_validate_segment_rejects_unknown_action():
+    with pytest.raises(ParseError, match="Unknown action"):
+        validate_segment({"start_ms": 0, "end_ms": 1000, "action": "fast-forward"})
+
+
 # ── Kodi EDL (issue #65) ───────────────────────────────────────────────────────
 
 def test_edl_parses_float_seconds():
@@ -170,6 +222,24 @@ def test_edl_round_trips_times_and_actions():
 
     assert [(s["start_ms"], s["end_ms"], s["action"]) for s in reparsed] == \
            [(s["start_ms"], s["end_ms"], s["action"]) for s in original]
+
+
+def test_edl_ignores_comment_lines_with_spaces():
+    """A '#' comment containing a space used to be parsed as a data row."""
+    segments = edl.parse("# skipping the intro\n30.5 45.0 0\n")
+
+    assert len(segments) == 1
+    assert segments[0]["start_ms"] == 30500
+
+
+def test_edl_export_omits_actions_edl_cannot_express():
+    """blank/blur must never be downgraded to a hard cut on export (§5.4)."""
+    exported = edl.export([
+        {"start_ms": 10_000, "end_ms": 20_000, "action": "blank", "category": "nudity"},
+        {"start_ms": 30_000, "end_ms": 40_000, "action": "skip", "category": "other"},
+    ])
+
+    assert exported.strip().splitlines() == ["30.000\t40.000\t0"]
 
 
 # ── MovieContentFilter .mcf (issue #66) ────────────────────────────────────────
@@ -256,6 +326,26 @@ def test_mcf_unknown_category_falls_back_to_other():
 def test_mcf_requires_its_header():
     with pytest.raises(ParseError, match="header"):
         mcf.parse("00:00:01.000 --> 00:00:02.000\nviolence=high\n")
+
+
+def test_mcf_accepts_a_utf8_bom():
+    """Windows-authored files carry a BOM; it is not whitespace to str.strip()."""
+    segments = mcf.parse(
+        "\ufeffWEBVTT MovieContentFilter 1.1.0\n\n00:00:01.000 --> 00:00:02.000\nviolence=high\n"
+    )
+
+    assert segments[0]["category"] == "violence"
+
+
+def test_mcf_export_omits_actions_mcf_cannot_express():
+    exported = mcf.export([
+        {"start_ms": 10_000, "end_ms": 20_000, "action": "blank", "category": "nudity"},
+        {"start_ms": 30_000, "end_ms": 40_000, "action": "skip", "category": "other"},
+    ])
+    reparsed = mcf.parse(exported)
+
+    assert len(reparsed) == 1
+    assert reparsed[0]["start_ms"] == 30_000
 
 
 def test_mcf_round_trips():

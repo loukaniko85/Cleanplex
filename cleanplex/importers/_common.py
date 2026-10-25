@@ -88,10 +88,16 @@ def runtime_warning(
 
 
 def validate_segment(seg: dict) -> dict:
-    """Normalize one parsed segment, raising if the times make no sense."""
+    """Normalize one parsed segment, raising if the times make no sense.
+
+    Parsers that process cues one by one (`.skp`) catch `ParseError` per cue so a
+    single authored typo cannot discard the rest of a valid file. Whole-file
+    parsers may let it propagate.
+    """
     if seg["end_ms"] < seg["start_ms"]:
         raise ParseError(
             f"Segment ends before it starts ({seg['start_ms']}ms → {seg['end_ms']}ms)"
+            f" — at {to_timestamp(seg['start_ms'])} → {to_timestamp(seg['end_ms'])}"
         )
     seg.setdefault("category", "other")
     seg.setdefault("severity", "high")
@@ -104,4 +110,11 @@ def validate_segment(seg: dict) -> dict:
         seg["severity"] = "high"
     if seg["channel"] not in CHANNELS:
         seg["channel"] = "both"
+    # CLAUDE.md §5.4: every segment carries a known action. An out-of-vocabulary
+    # action used to pass straight through to the DB and was then ignored at
+    # playback time with no explanation.
+    if seg["action"] not in ACTIONS:
+        raise ParseError(
+            f"Unknown action {seg['action']!r}; expected one of {', '.join(ACTIONS)}."
+        )
     return seg

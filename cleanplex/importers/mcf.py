@@ -26,9 +26,12 @@ from __future__ import annotations
 
 import re
 
+from ..logger import get_logger
 from ._common import CATEGORIES, ParseError, to_ms, to_timestamp, validate_segment
 
 SOURCE = "mcf"
+
+logger = get_logger(__name__)
 
 _HEADER_RE = re.compile(r"^WEBVTT\s+MovieContentFilter\s+([\d.]+)", re.IGNORECASE)
 _CUE_RE = re.compile(r"^\s*([\d:.,]+)\s*-+>\s*([\d:.,]+)\s*$")
@@ -82,7 +85,9 @@ def _to_group(category: str) -> str:
 
 def parse(text: str) -> list[dict]:
     """Parse an `.mcf` body into normalized segments."""
-    body = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Editors on Windows routinely prepend a UTF-8 BOM. It is not whitespace, so
+    # without this the header check rejected otherwise valid files outright.
+    body = text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     lines = body.split("\n")
 
     if not lines or not _HEADER_RE.match(lines[0].strip()):
@@ -131,8 +136,22 @@ def parse(text: str) -> list[dict]:
 
 
 def export(segments: list[dict], title: str = "", year: int | None = None) -> str:
-    """Render segments as a valid MCF 1.1.0 document."""
-    ordered = sorted(segments, key=lambda s: s["start_ms"])
+    """Render segments as a valid MCF 1.1.0 document.
+
+    MCF describes only what to remove, not how, so segments whose action cannot
+    be expressed (blank/blur/fast) are excluded with a warning instead of being
+    silently downgraded to cuts on the next import.
+    """
+    ordered = [
+        seg for seg in sorted(segments, key=lambda s: s["start_ms"])
+        if (seg.get("action") or "skip") in ("skip", "mute")
+    ]
+    omitted = len(segments) - len(ordered)
+    if omitted:
+        logger.warning(
+            "MCF export omitted %d segment(s) with actions MCF cannot express (blank/blur/fast)",
+            omitted,
+        )
     out = ["WEBVTT MovieContentFilter 1.1.0", ""]
 
     if title:

@@ -123,7 +123,7 @@ async def test_guid_mismatch_falls_back_to_rating_key():
 # ── Buffers (issue #58) ────────────────────────────────────────────────────────
 
 async def test_pre_buffer_widens_segment_start():
-    """A 3000ms pre-buffer must move the trigger and target to 27000, not 25000.
+    """The pre-buffer moves the trigger window (and the skip target) 3000ms early.
 
     Regression test for the hardcoded 5000ms expansion that ignored the setting.
     """
@@ -135,7 +135,8 @@ async def test_pre_buffer_widens_segment_start():
 
     client.seek.assert_awaited_once()
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 27000
+    # Skips PAST the widened end (40000 + 3000 post-buffer), not to its start.
+    assert seek_ms == 43000
 
 
 async def test_pre_buffer_is_honoured_when_changed():
@@ -146,7 +147,7 @@ async def test_pre_buffer_is_honoured_when_changed():
         await fe.process(session, client, pre_buffer_ms=8000, post_buffer_ms=1000, lookahead_ms=0)
 
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 22000
+    assert seek_ms == 41000
 
 
 async def test_post_buffer_bounds_the_trigger_window():
@@ -168,14 +169,15 @@ async def test_pre_buffer_clamps_at_zero():
         await fe.process(session, client, pre_buffer_ms=8000, post_buffer_ms=3000, lookahead_ms=0)
 
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 0
+    assert seek_ms == 8000
 
 
 # ── Lookahead trigger ──────────────────────────────────────────────────────────
 
 async def test_position_within_lookahead_triggers_seek():
     # Segment 30000-40000 with a 3000ms pre-buffer starts at 27000; a 5000ms
-    # lookahead means position 23000 is inside the trigger window.
+    # lookahead means position 23000 is inside the trigger window. The skip must
+    # land past the content (43000 = widened end), never at its start.
     session = _session(position_ms=23000)
     client = _make_client()
     with patch("cleanplex.filter_engine.db") as mock_db:
@@ -184,7 +186,31 @@ async def test_position_within_lookahead_triggers_seek():
 
     client.seek.assert_awaited_once()
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 27000
+    assert seek_ms == 43000
+
+
+async def test_skip_lands_after_the_flagged_content():
+    """The core product contract: a viewer never plays through a flagged span."""
+    session = _session(position_ms=35000)
+    client = _make_client()
+    with patch("cleanplex.filter_engine.db") as mock_db:
+        _mock_db(mock_db, _segs(30000, 40000))
+        await fe.process(session, client, pre_buffer_ms=3000, post_buffer_ms=3000)
+
+    _, seek_ms, *_ = client.seek.call_args[0]
+    assert seek_ms > 40000  # past the real segment end
+    assert seek_ms == 43000  # exactly the widened end
+
+
+async def test_landing_on_the_widened_end_does_not_re_trigger():
+    """After a successful skip, position == widened end must not fire again."""
+    session = _session(position_ms=43000)
+    client = _make_client()
+    with patch("cleanplex.filter_engine.db") as mock_db:
+        _mock_db(mock_db, _segs(30000, 40000))
+        await fe.process(session, client, pre_buffer_ms=3000, post_buffer_ms=3000, lookahead_ms=5000)
+
+    client.seek.assert_not_called()
 
 
 async def test_position_before_lookahead_does_not_seek():

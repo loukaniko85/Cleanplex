@@ -47,8 +47,9 @@ def parse_file(path: str | Path) -> tuple[list[dict], str]:
     if module is None:
         raise ImportError_(f"Unsupported skip file type: {path.suffix or path.name}")
     # Skip files are user-authored text of unknown encoding; replace rather than
-    # fail, so one bad byte does not lose an otherwise valid file.
-    text = path.read_text(encoding="utf-8", errors="replace")
+    # fail, so one bad byte does not lose an otherwise valid file. `utf-8-sig`
+    # strips a BOM, which `.mcf` header validation would otherwise reject.
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
     return module.parse(text), module.SOURCE
 
 

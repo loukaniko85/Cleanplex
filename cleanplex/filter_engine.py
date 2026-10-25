@@ -155,9 +155,12 @@ async def process(
 
     logger.info("Checking %d segment(s) for '%s' at pos=%dms (client=%s)", len(segments), session.full_title, pos, session.client_identifier)
     for seg in segments:
-        # Trigger when approaching the segment (within lookahead_ms before start) or already inside.
-        # This compensates for polling latency so the action fires before/at the segment start.
-        if not (seg["start_ms"] - lookahead_ms <= pos <= seg["end_ms"]):
+        # Trigger when approaching the segment (within lookahead_ms before start) or
+        # already inside it. The right edge is exclusive: a successful skip lands on
+        # the widened end, and an inclusive check would immediately re-trigger there.
+        # This compensates for polling latency so the action fires before/at the
+        # segment start.
+        if not (seg["start_ms"] - lookahead_ms <= pos < seg["end_ms"]):
             continue
         if not _matches_language(seg, session.audio_language):
             continue
@@ -227,8 +230,14 @@ async def verify_pending_seek(session: ActiveSession, client: PlexClient) -> Non
 
 
 async def _apply_skip(session: ActiveSession, client: PlexClient, seg: dict, pos: int) -> None:
-    """Seek past the segment and record the outcome."""
-    target = seg["start_ms"]
+    """Seek past the segment and record the outcome.
+
+    The target is the widened end (real end + post-buffer), not the start: seeking
+    to the start of flagged content lands the viewer inside it, and the
+    `_recently_skipped` guard then suppresses retries until playback has run
+    through the whole span — i.e. no filtering happened at all.
+    """
+    target = seg["end_ms"]
     logger.info(
         "Skipping [%s] for user '%s': %dms → %dms (segment: %d–%d, category=%s, confidence=%.2f)",
         session.full_title,

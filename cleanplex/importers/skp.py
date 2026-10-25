@@ -27,9 +27,12 @@ from __future__ import annotations
 
 import re
 
+from ..logger import get_logger
 from ._common import ParseError, to_ms, validate_segment
 
 SOURCE = "skp"
+
+logger = get_logger(__name__)
 
 # IMDb Parents Guide buckets, as the player groups them, mapped onto the
 # MovieContentFilter vocabulary we store.
@@ -99,11 +102,18 @@ def _parse_label(label: str) -> dict:
 
 
 def parse(text: str) -> list[dict]:
-    """Parse a `.skp` file body into normalized segments."""
+    """Parse a `.skp` file body into normalized segments.
+
+    Cues are processed independently: one authored typo (an inverted range, a
+    missing label) drops that cue with a warning instead of discarding the whole
+    file, which is how a single bad line in a 100-cue Exchange file used to
+    destroy an otherwise valid import.
+    """
     body = _strip_trailer(text.replace("\r\n", "\n").replace("\r", "\n"))
     lines = body.split("\n")
 
     segments: list[dict] = []
+    dropped: list[str] = []
     saw_cue = False
     index = 0
     while index < len(lines):
@@ -113,22 +123,54 @@ def parse(text: str) -> list[dict]:
             continue
 
         saw_cue = True
-        label = lines[index + 1].strip() if index + 1 < len(lines) else ""
-        index += 2
+        cue_line = index + 1
+        index += 1
+
+        # Locate the label line. Blank lines between the cue and its label are
+        # tolerated (up to three), but another cue line is never consumed as a
+        # label — that used to swallow the following cue and invent a category
+        # from its digits.
+        label = ""
+        probe = index
+        while probe < len(lines) and not lines[probe].strip() and probe - index < 3:
+            probe += 1
+        if probe < len(lines) and not _CUE_RE.match(lines[probe]):
+            label = lines[probe].strip()
+            index = probe + 1
 
         # `//` marks a cue the author disabled; the player ignores it entirely.
         if "//" in label:
             continue
 
+        if not label:
+            dropped.append(f"line {cue_line}: cue has no label line")
+            continue
+
         seg = _parse_label(label)
         seg["start_ms"] = to_ms(match.group(1))
         seg["end_ms"] = to_ms(match.group(2))
-        segments.append(validate_segment(seg))
+        try:
+            segments.append(validate_segment(seg))
+        except ParseError as exc:
+            dropped.append(f"line {cue_line}: {exc}")
 
     if not saw_cue:
         raise ParseError(
             "No skip cues found. A .skp file needs lines of the form "
             "'0:01:02.5 --> 0:01:09' followed by a label line."
+        )
+
+    if dropped:
+        logger.warning(
+            "Skipped %d malformed cue(s) in .skp file: %s",
+            len(dropped),
+            "; ".join(dropped),
+        )
+    if not segments:
+        raise ParseError(
+            "No usable skip cues found. " + "; ".join(dropped[:5])
+            if dropped
+            else "No skip cues found."
         )
 
     segments.sort(key=lambda s: s["start_ms"])

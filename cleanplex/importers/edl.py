@@ -16,9 +16,12 @@ DVR path: this is interchange with Kodi, Jellyfin and comskip, not with Plex.
 
 from __future__ import annotations
 
+from ..logger import get_logger
 from ._common import ParseError, to_ms, validate_segment
 
 SOURCE = "edl"
+
+logger = get_logger(__name__)
 
 # Scene markers are navigation aids rather than filters, so they are parsed and
 # then dropped rather than turned into skips.
@@ -38,7 +41,11 @@ def parse(text: str) -> list[dict]:
 
     for lineno, raw in enumerate(text.replace("\r\n", "\n").split("\n"), start=1):
         line = raw.strip()
-        if not line or line.startswith("#") and " " not in line:
+        # A comment is "#" followed by a space (or a bare "#"). Frame timestamps
+        # such as "#1200" stay data so they hit the clear frame-rate error below;
+        # the old precedence bug sent "# comment with spaces" into the parser and
+        # failed the whole file on its action column.
+        if not line or line == "#" or line.startswith("# "):
             continue
 
         fields = line.split()
@@ -76,14 +83,29 @@ def parse(text: str) -> list[dict]:
 
 
 def export(segments: list[dict]) -> str:
-    """Render segments as an EDL body for Kodi, Jellyfin or mpv."""
+    """Render segments as an EDL body for Kodi, Jellyfin or mpv.
+
+    EDL has no representation for `blank`/`blur`/`fast`; those are excluded
+    (with a warning) rather than silently turned into hard cuts, which CLAUDE.md
+    §5.4 forbids for non-executable actions.
+    """
     lines = []
+    skipped = 0
     for seg in sorted(segments, key=lambda s: s["start_ms"]):
+        action = seg.get("action") or "skip"
+        if action not in ("skip", "mute"):
+            skipped += 1
+            continue
         if seg.get("category") == "commercial":
             code = 3
-        elif seg.get("action") == "mute":
+        elif action == "mute":
             code = 1
         else:
             code = 0
         lines.append(f"{seg['start_ms'] / 1000:.3f}\t{seg['end_ms'] / 1000:.3f}\t{code}")
+    if skipped:
+        logger.warning(
+            "EDL export omitted %d segment(s) with actions EDL cannot express (blank/blur/fast)",
+            skipped,
+        )
     return "\n".join(lines) + ("\n" if lines else "")
