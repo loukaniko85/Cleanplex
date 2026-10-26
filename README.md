@@ -492,12 +492,17 @@ Titles can be marked as **ignored** to skip them during background scans:
   accepts the API request and ignores it. Cleanplex probes each active client with a
   harmless command and marks it "Not controllable" (with the probe error) when it
   refuses. Play through a Plex app on a TV, phone or tablet instead.
-- In the Plex app, enable **Settings → Advanced → Advertise as player** so the server
-  can send seek commands to it. Some mobile builds do not appear in Plex's client
-  registry until this is on; Cleanplex probes unknown clients directly, so the
-  Dashboard will say whether control works.
-- Settings → Plex diagnostics shows `last_control_error` when a command was attempted
-  and rejected; the Dashboard's recent skip events record `success: 0` for those.
+- **Plex for Mobile 2025.10+ removed Companion remote control** (Plex's own support
+  article says so). A recent Android/iOS app may play but cannot be seeked by any
+  third-party controller. Supported receivers are TV/console/desktop builds and older
+  mobile versions; the Dashboard's **Plex Clients** panel tells you which of yours can
+  be controlled.
+- In the Plex app, enable **Settings → Advanced → Advertise as player** where the
+  option exists. Some builds do not appear in Plex's client registry until this is on;
+  Cleanplex probes unknown clients directly, so the Dashboard will say whether control
+  works.
+- Settings → Plex diagnostics shows `last_proxy_error` and `last_direct_error` when a
+  command was attempted and rejected; recent skip events record `success: 0`.
 
 **Posters not loading on remote devices?**
 - The app automatically proxies all Plex images to work around localhost URL issues. Try hard-refreshing the browser (Ctrl+F5).

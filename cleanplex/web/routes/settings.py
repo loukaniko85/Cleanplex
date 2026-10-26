@@ -131,6 +131,8 @@ async def plex_diagnostics():
         ],
         "last_session_error": client.last_session_error,
         "last_control_error": client.last_control_error,
+        "last_proxy_error": client.last_proxy_error,
+        "last_direct_error": client.last_direct_error,
     }
 
 

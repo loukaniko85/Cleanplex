@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import re
 import time
@@ -24,6 +25,19 @@ from plexapi.exceptions import PlexApiException
 from .logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _is_private_address(address: str) -> bool:
+    """True when a direct control attempt is worth trying (LAN, not loopback)."""
+    if not address:
+        return False
+    if address in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return False
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return True  # hostname; bounded by the 2s per-attempt timeout
+    return ip.is_private and not ip.is_loopback
 
 
 def _as_list(value) -> list:
@@ -171,6 +185,10 @@ class PlexClient:
         # Most recent player-command failure (proxy/direct), surfaced by
         # /api/settings/plex-diagnostics so "controllable" that is not is visible.
         self.last_control_error = ""
+        # Transport-specific errors, kept separate: the direct fallback used to
+        # overwrite a meaningful proxy error with "All connection attempts failed".
+        self.last_proxy_error = ""
+        self.last_direct_error = ""
         # Monotonic command ids: two commands in the same second must not share an
         # id or some clients silently ignore the second one (200, no action).
         self._command_id = int(time.time() * 1000)
@@ -421,7 +439,9 @@ class PlexClient:
         """Ask a client to accept a harmless player command, caching the answer.
 
         Plex Web answers with 400; a Companion-capable app answers 200. This is the
-        only honest way to classify clients that never appear in /clients.
+        only honest way to classify clients that never appear in /clients. Direct
+        attempts are only made for private addresses and are tightly bounded — the
+        old code spent 80 seconds retrying unreachable phones.
         """
         if not client_identifier:
             return False, "the session did not expose a player identifier"
@@ -433,19 +453,33 @@ class PlexClient:
 
         ping = f"/player/playback/ping?commandID={self._next_command_id()}"
         controllable = await self._try_proxy(ping, client_identifier)
-        if not controllable and address:
-            for variant in range(len(self._direct_variants("http://x", client_identifier))):
+        if (
+            not controllable
+            and address
+            and _is_private_address(address)
+        ):
+            for variant in range(2):
                 if await self._try_direct(ping, client_identifier, address, port, variant):
                     controllable = True
                     break
 
-        error = "" if controllable else (self.last_control_error or "no response")
-        self._control_probe_cache[client_identifier] = (now, controllable, error[:200])
+        proxy_error = self.last_proxy_error
+        direct_error = self.last_direct_error
+        if controllable:
+            error = ""
+        elif proxy_error:
+            error = f"server proxy: {proxy_error}"
+        elif direct_error:
+            error = f"direct: {direct_error}"
+        else:
+            error = "no response"
+
+        self._control_probe_cache[client_identifier] = (now, controllable, error[:300])
         logger.info(
             "Control probe for %s: %s%s",
             client_identifier,
             "ok" if controllable else "not controllable",
-            "" if controllable else f" ({error[:120]})",
+            "" if controllable else f" ({error[:180]})",
         )
         return controllable, error
 
@@ -533,10 +567,12 @@ class PlexClient:
                 "X-Plex-Provides": "controller",
             }
             await asyncio.to_thread(srv.query, path, headers=headers)
+            self.last_proxy_error = ""
             self.last_control_error = ""
             return True
         except Exception as exc:
-            self.last_control_error = str(exc)[:400]
+            self.last_proxy_error = str(exc)[:400]
+            self.last_control_error = self.last_proxy_error
             logger.warning("Proxy %s failed for %s: %s", path.split("?")[0], client_identifier, exc)
             return False
 
@@ -550,19 +586,22 @@ class PlexClient:
             return False
         url, headers = variants[variant]
         try:
-            resp = await self._http.get(url, headers=headers)
+            resp = await self._http.get(url, headers=headers, timeout=2.0)
             if resp.status_code < 300:
+                self.last_direct_error = ""
                 self.last_control_error = ""
                 return True
-            self.last_control_error = (
+            self.last_direct_error = (
                 f"HTTP {resp.status_code} from {address}:{port}: {resp.text[:300]}"
             )
+            self.last_control_error = self.last_direct_error
             logger.warning(
                 "Direct command HTTP %d for client %s at %s:%d (variant=%d, body=%s)",
                 resp.status_code, client_identifier, address, port, variant + 1, resp.text[:500],
             )
         except Exception as exc:
-            self.last_control_error = str(exc)[:400]
+            self.last_direct_error = str(exc)[:400]
+            self.last_control_error = self.last_direct_error
             logger.warning(
                 "Direct command failed for client %s at %s:%d (variant=%d): %s",
                 client_identifier, address, port, variant + 1, exc,
@@ -579,6 +618,13 @@ class PlexClient:
         matters most.
         """
         profile = self._client_profiles.get(client_identifier)
+
+        # A client that just rejected a command (probe or seek) should not cost
+        # another 10+ seconds on every poll; back off briefly.
+        cached = self._control_probe_cache.get(client_identifier)
+        if cached and not cached[1] and time.monotonic() - cached[0] < 120:
+            self.last_control_error = cached[2]
+            return False
 
         if profile is not None:
             if profile.get("transport") == "proxy":
@@ -629,7 +675,14 @@ class PlexClient:
             f"/player/playback/seekTo?offset={offset_ms}&type=video"
             f"&commandID={self._next_command_id()}"
         )
-        success = await self._send_command(path, client_identifier, client_address, client_port)
+        try:
+            success = await asyncio.wait_for(
+                self._send_command(path, client_identifier, client_address, client_port),
+                timeout=15,
+            )
+        except asyncio.TimeoutError:
+            self.last_control_error = "player command timed out"
+            success = False
         self._record_control_result(client_identifier, success)
         if success:
             logger.info("Seeked client %s to %dms", client_identifier, offset_ms)

@@ -98,6 +98,8 @@ async def get_client_capabilities():
         "known": registry is not None,
         "clients": entries,
         "last_control_error": client.last_control_error,
+        "last_proxy_error": client.last_proxy_error,
+        "last_direct_error": client.last_direct_error,
     }
 
 
