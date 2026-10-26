@@ -73,6 +73,18 @@ async def main() -> None:
 
     await db.set_setting("plex_url", "http://plex:32400")
     await db.set_setting("plex_token", "e2e-token")
+    # Keep the scanner out of the fixture data regardless of the runner's timezone:
+    # a window starting two hours from now is closed now, so the seeded pending
+    # title is not attempted (and does not fail on its missing media file).
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    await db.set_setting(
+        "scan_window_start", (now + timedelta(hours=2)).strftime("%H:%M")
+    )
+    await db.set_setting(
+        "scan_window_end", (now + timedelta(hours=3)).strftime("%H:%M")
+    )
     sys.stdout.write("Seeded e2e database at %s\n" % (data_dir / "cleanplex.db"))
 
 
