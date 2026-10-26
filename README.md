@@ -425,8 +425,19 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Local scanning coverage** — NudeNet titles scanned, titles with ML segments, and titles still missing local coverage, overall and per library
 - **VideoSkip coverage** — Title/segment counts overall and per library, plus the auto-fetch toggle, queue limits, live queue status, and pause/resume/retry/clear controls. The queue is off by default and processes one title at a time.
 
-## Client Compatibility
+## Filtering on clients without remote control (Android bridge)
 
+Plex Web and Plex for Mobile 2025.10+ cannot be controlled through Plex's API. For
+Android devices (phones, tablets, Nvidia Shield), `android-bridge/` contains an
+experimental sideloadable app that attaches to Plex's `MediaSession` using public
+Android APIs and applies the same segments (seek/mute). It requires notification access
+and that Plex exposes `SEEK_TO`; the app reports both on screen. See
+[android-bridge/README.md](android-bridge/README.md).
+
+The server exposes `GET /api/sessions/bridge` for this app: active sessions plus their
+segments.
+
+## Client Compatibility
 The seek command is sent via the Plex Player Control API and works with most modern Plex clients:
 
 | Client | Supported |

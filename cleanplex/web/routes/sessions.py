@@ -103,6 +103,49 @@ async def get_client_capabilities():
     }
 
 
+@router.get("/bridge")
+async def bridge_sessions():
+    """Return active sessions with their segments, for the Android bridge app.
+
+    The bridge cannot seek Plex clients through Plex's API on modern apps, so it
+    attaches to Plex's Android MediaSession instead. It still needs to know which
+    segments belong to the playing title and where they are; that is this endpoint.
+    """
+    try:
+        client = plex_mod.get_client()
+    except RuntimeError:
+        return {"sessions": []}
+
+    sessions = await client.get_active_sessions()
+    payload: list[dict] = []
+    for session in sessions:
+        segments = await db.get_segments_for_guid(session.plex_guid)
+        if not segments and session.rating_key:
+            segments = await db.get_segments_by_rating_key(session.rating_key)
+        payload.append({
+            "session_key": session.session_key,
+            "rating_key": session.rating_key,
+            "plex_guid": session.plex_guid,
+            "title": session.title,
+            "full_title": session.full_title,
+            "media_type": session.media_type,
+            "user": session.user,
+            "position_ms": session.position_ms,
+            "duration_ms": session.duration_ms,
+            "segments": [
+                {
+                    "start_ms": segment["start_ms"],
+                    "end_ms": segment["end_ms"],
+                    "action": segment.get("action") or "skip",
+                    "category": segment.get("category") or "",
+                    "severity": segment.get("severity") or "",
+                }
+                for segment in segments
+            ],
+        })
+    return {"sessions": payload}
+
+
 @router.get("/scanner-status")
 async def scanner_status():
     current_guid = get_current_scan()

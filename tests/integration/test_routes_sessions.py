@@ -204,6 +204,34 @@ async def test_skip_session_seeks_to_next_segment(http_client):
     assert data["seek_to_ms"] == 25000  # 30000 - 5000 (expansion)
 
 
+async def test_bridge_sessions_include_segments_for_active_title(http_client):
+    await db.insert_segment("g1", "Movie", start_ms=30_000, end_ms=60_000, confidence=0.9)
+    sessions = [_active_session(position_ms=10_000)]
+    mock_client = make_mock_plex_client(sessions=sessions)
+    with patch("cleanplex.web.routes.sessions.plex_mod.get_client", return_value=mock_client):
+        resp = await http_client.get("/api/sessions/bridge")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["sessions"]) == 1
+    session = body["sessions"][0]
+    assert session["rating_key"] == "100"
+    assert session["title"] == "Movie"
+    assert session["segments"][0]["start_ms"] == 30_000
+    assert session["segments"][0]["end_ms"] == 60_000
+    assert session["segments"][0]["action"] == "skip"
+
+
+async def test_bridge_sessions_empty_without_plex(http_client):
+    with patch(
+        "cleanplex.web.routes.sessions.plex_mod.get_client",
+        side_effect=RuntimeError("not configured"),
+    ):
+        resp = await http_client.get("/api/sessions/bridge")
+
+    assert resp.json() == {"sessions": []}
+
+
 async def test_clients_lists_registry_and_uncontrollable_web_session(http_client):
     from cleanplex.plex_client import PlexClientInfo
 

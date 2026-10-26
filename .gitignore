@@ -20,6 +20,12 @@ e2e/.data/
 e2e/test-results/
 e2e/playwright-report/
 
+# Android bridge build output
+android-bridge/.gradle/
+android-bridge/build/
+android-bridge/app/build/
+android-bridge/local.properties
+
 # Thumbnails and runtime data
 ~/.cleanplex/
 
