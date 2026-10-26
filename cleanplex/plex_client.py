@@ -27,6 +27,27 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 
+def _control_failure_note(product: str, version: str, error: str) -> str:
+    """Explain why a client refused remote control, using its product/version."""
+    detail = f" ({error})" if error else ""
+    lowered = (product or "").lower()
+    if "plex web" in lowered or (not product and not version):
+        return (
+            "Plex Web (a browser player) does not accept remote-control commands"
+            f"{detail}. Use a Plex app on a TV or console."
+        )
+    if any(word in lowered for word in ("android", "ios", "iphone", "ipad", "mobile")):
+        return (
+            "Plex mobile apps 2025.10+ removed Companion remote control, so this client "
+            f"cannot be seeked{detail}. A TV, console or older app may still work."
+        )
+    return (
+        "This client rejected remote-control commands"
+        f"{detail}. Modern Plex apps removed Companion support; a TV, console or "
+        "older app may still work."
+    )
+
+
 def _is_private_address(address: str) -> bool:
     """True when a direct control attempt is worth trying (LAN, not loopback)."""
     if not address:
@@ -92,6 +113,7 @@ class ActiveSession:
     # Dashboard's client-capability display and diagnostics.
     client_product: str = ""
     capabilities: str = ""
+    client_version: str = ""
 
 
 @dataclass
@@ -289,7 +311,9 @@ class PlexClient:
                 # never does but does reject commands. Absence is therefore probed
                 # with a harmless command rather than assumed to be uncontrollable.
                 info = registry.get(client_id) if registry is not None else None
-                client_product = info.product if info else ""
+                player_product = getattr(player, "product", "") if player else ""
+                client_product = info.product if info else player_product
+                client_version = getattr(player, "version", "") if player else ""
                 capabilities = ",".join(info.capabilities) if info else ""
                 control_note = ""
                 if info is not None:
@@ -301,11 +325,8 @@ class PlexClient:
                         client_id, client_address, client_port
                     )
                     if not controllable:
-                        control_note = (
-                            "Cleanplex could not control this client"
-                            + (f" ({probe_error})" if probe_error else "")
-                            + ". Use a Plex app that accepts remote commands; if this is a "
-                            "Plex app, enable 'Advertise as player' in its settings."
+                        control_note = _control_failure_note(
+                            client_product, client_version, probe_error
                         )
 
                 volume_raw = getattr(player, "volume", None) if player else None
@@ -369,6 +390,7 @@ class PlexClient:
                         control_note=control_note,
                         client_product=client_product,
                         capabilities=capabilities,
+                        client_version=client_version,
                     )
                 )
             except Exception as exc:

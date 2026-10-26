@@ -491,18 +491,18 @@ Titles can be marked as **ignored** to skip them during background scans:
 - Check the client. **Plex Web (a browser tab) cannot be controlled remotely** — it
   accepts the API request and ignores it. Cleanplex probes each active client with a
   harmless command and marks it "Not controllable" (with the probe error) when it
-  refuses. Play through a Plex app on a TV, phone or tablet instead.
-- **Plex for Mobile 2025.10+ removed Companion remote control** (Plex's own support
-  article says so). A recent Android/iOS app may play but cannot be seeked by any
-  third-party controller. Supported receivers are TV/console/desktop builds and older
-  mobile versions; the Dashboard's **Plex Clients** panel tells you which of yours can
-  be controlled.
-- In the Plex app, enable **Settings → Advanced → Advertise as player** where the
-  option exists. Some builds do not appear in Plex's client registry until this is on;
-  Cleanplex probes unknown clients directly, so the Dashboard will say whether control
-  works.
+  refuses.
+- **Plex for Mobile 2025.10+ removed Companion remote control** (Plex's support article
+  says so) and the new apps no longer expose "Advertise as player". Cleanplex cannot
+  seek those clients by any API; the Dashboard names the client and the reason.
+- Modern Plex TV/console builds may also have dropped Companion. Supported receivers
+  are older app builds (2025.09 or earlier) and clients that still advertise the
+  `playback` capability. The **Plex Clients** panel shows which of yours qualify.
 - Settings → Plex diagnostics shows `last_proxy_error` and `last_direct_error` when a
   command was attempted and rejected; recent skip events record `success: 0`.
+- If your only players are Plex Web or a new mobile app, filtering requires either a
+  browser extension (Plex Web) or pre-filtered copies of the media — the server API
+  cannot seek those clients.
 
 **Posters not loading on remote devices?**
 - The app automatically proxies all Plex images to work around localhost URL issues. Try hard-refreshing the browser (Ctrl+F5).
